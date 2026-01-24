@@ -1,0 +1,50 @@
+{
+    "name": "AR SOP Builder",
+    "short_name": "SOP Builder",
+    "description": "Create interactive video SOPs with AR overlays",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "portrait-primary",
+    "background_color": "#F0F6FF",
+    "theme_color": "#00B450",
+    "icons": [
+      {
+        "src": "/android/icon-192x192.png",
+        "sizes": "192x192",
+        "type": "image/png",
+        "purpose": "any maskable"
+      },
+      {
+        "src": "/android/icon-512x512.png",
+        "sizes": "512x512",
+        "type": "image/png",
+        "purpose": "any maskable"
+      }
+    ]
+  }
+  
+// {
+//   "name": "AR SOP Builder",
+//   "short_name": "SOP Builder",
+//   "description": "Create interactive video SOPs with AR overlays",
+//   "start_url": "/",
+//   "display": "standalone",
+//   "background_color": "#ffffff",
+//   "theme_color": "#000000",
+//   "orientation": "portrait-primary",
+//   "icons": [
+//     {
+//       "src": "/icon-192x192.png",
+//       "sizes": "192x192",
+//       "type": "image/png",
+//       "purpose": "any maskable"
+//     },
+//     {
+//       "src": "/icon-512x512.png",
+//       "sizes": "512x512",
+//       "type": "image/png",
+//       "purpose": "any maskable"
+//     }
+//   ]
+// }

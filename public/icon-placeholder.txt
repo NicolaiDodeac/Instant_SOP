@@ -1,0 +1,14 @@
+PWA Icons Required
+
+Please create the following icon files and place them in the /public directory:
+
+1. icon-192x192.png (192x192 pixels)
+2. icon-512x512.png (512x512 pixels)
+
+You can:
+- Use a tool like https://realfavicongenerator.net/
+- Use PWA Asset Generator: https://github.com/onderceylan/pwa-asset-generator
+- Create them manually in any image editor
+
+The icons should represent your AR SOP Builder app.
+For now, you can use simple placeholder images to get started.

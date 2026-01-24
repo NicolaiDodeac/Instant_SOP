@@ -1,0 +1,20 @@
+/* Print styles for SOP viewer */
+@media print {
+  body {
+    background: white;
+    color: black;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  video {
+    max-width: 100%;
+    height: auto;
+  }
+
+  .step-player {
+    page-break-inside: avoid;
+  }
+}

@@ -23,6 +23,7 @@ export default function EditorPage() {
   const [currentStepId, setCurrentStepId] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
+  const [videoDuration, setVideoDuration] = useState(0) // Track actual video duration from video element
   const [startTime, setStartTime] = useState(0)
   const [endTime, setEndTime] = useState(0)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
@@ -155,17 +156,23 @@ export default function EditorPage() {
       loadLocalVideo()
     }
 
-    // Load annotations for this step
-    const stepAnns = annotations[currentStepId] || []
-    if (stepAnns.length > 0) {
-      const firstAnn = stepAnns[0]
-      setStartTime(firstAnn.t_start_ms)
-      setEndTime(firstAnn.t_end_ms)
-    } else {
-      setStartTime(0)
-      setEndTime(step.duration_ms || 0)
-    }
+    // Reset time range when switching steps
+    setStartTime(0)
+    setEndTime(step.duration_ms || 0)
+    setSelectedAnnotationId(null) // Deselect annotation when switching steps
   }, [currentStepId, steps])
+
+  // Sync TimeBar with selected annotation's times
+  useEffect(() => {
+    if (selectedAnnotationId && currentStepId) {
+      const stepAnns = annotations[currentStepId] || []
+      const selectedAnn = stepAnns.find((ann) => ann.id === selectedAnnotationId)
+      if (selectedAnn) {
+        setStartTime(selectedAnn.t_start_ms)
+        setEndTime(selectedAnn.t_end_ms)
+      }
+    }
+  }, [selectedAnnotationId, annotations, currentStepId])
 
   async function loadVideoUrl(videoPath: string) {
     try {
@@ -335,11 +342,23 @@ export default function EditorPage() {
       return
     }
 
+    // Determine default times for new annotation
+    let defaultStartTime = startTime
+    let defaultEndTime = endTime
+
+    // If start and end are both 0, or if they're the same, set a default 3-second range from current time
+    if ((defaultStartTime === 0 && defaultEndTime === 0) || defaultStartTime === defaultEndTime) {
+      defaultStartTime = currentTime
+      defaultEndTime = Math.min(currentTime + 3000, step.duration_ms || currentTime + 3000)
+      setStartTime(defaultStartTime)
+      setEndTime(defaultEndTime)
+    }
+
     const newAnn: StepAnnotation = {
       id: nanoid(),
       step_id: stepId, // Use the local variable to ensure we have the correct step ID
-      t_start_ms: startTime,
-      t_end_ms: endTime,
+      t_start_ms: defaultStartTime,
+      t_end_ms: defaultEndTime,
       kind,
       x: 0.5,
       y: 0.5,
@@ -349,6 +368,9 @@ export default function EditorPage() {
         ? { color: '#00ff00', strokeWidth: 5 } // Big green arrow
         : { color: '#ffffff', fontSize: 20 }, // White label
     }
+
+    // Select the newly created annotation so user can immediately edit its times
+    setSelectedAnnotationId(newAnn.id)
 
     if (process.env.NODE_ENV === 'development') {
       console.log('Adding annotation:', { 
@@ -454,6 +476,19 @@ export default function EditorPage() {
     )
     setAnnotations({ ...annotations, [currentStepId]: updatedAnns })
 
+    // If updating times of the selected annotation, sync TimeBar
+    if (selectedAnnotationId === id && (updates.t_start_ms !== undefined || updates.t_end_ms !== undefined)) {
+      const updatedAnn = updatedAnns.find((ann) => ann.id === id)
+      if (updatedAnn) {
+        if (updates.t_start_ms !== undefined) {
+          setStartTime(updatedAnn.t_start_ms)
+        }
+        if (updates.t_end_ms !== undefined) {
+          setEndTime(updatedAnn.t_end_ms)
+        }
+      }
+    }
+
     // Save to server
     if (!isOffline) {
       // Check if annotation has been saved to database (UUID format) or is still local (nanoid)
@@ -475,6 +510,14 @@ export default function EditorPage() {
         if ('t_start_ms' in updates) cleanUpdates.t_start_ms = updates.t_start_ms
         if ('t_end_ms' in updates) cleanUpdates.t_end_ms = updates.t_end_ms
 
+        // Only update if there are actual changes
+        if (Object.keys(cleanUpdates).length === 0) {
+          if (process.env.NODE_ENV === 'development') {
+            console.log('No changes to update for annotation:', id)
+          }
+          return
+        }
+
         const { error } = await supabase
           .from('step_annotations')
           .update(cleanUpdates)
@@ -483,13 +526,17 @@ export default function EditorPage() {
         if (error) {
           if (process.env.NODE_ENV === 'development') {
             console.error('Error updating annotation:', {
+              error: error,
               errorMessage: error.message,
               errorDetails: error.details,
               errorHint: error.hint,
+              errorCode: error.code,
               id,
               cleanUpdates,
             })
           }
+        } else if (process.env.NODE_ENV === 'development') {
+          console.log('Annotation updated successfully:', { id, cleanUpdates })
         }
       } else {
         // Annotation not saved yet - it will be saved when created
@@ -658,17 +705,35 @@ export default function EditorPage() {
                 selectedAnnotationId={selectedAnnotationId}
                 onSelectAnnotation={setSelectedAnnotationId}
                 onTimeUpdate={setCurrentTime}
+                onDurationUpdate={setVideoDuration}
                 showControls={false}
                 seekTime={currentTime}
               />
               <TimeBar
-                duration={currentStep.duration_ms || 0}
+                duration={videoDuration || currentStep.duration_ms || 0}
                 currentTime={currentTime}
                 startTime={startTime}
                 endTime={endTime}
-                onStartTimeChange={setStartTime}
-                onEndTimeChange={setEndTime}
+                onStartTimeChange={(time) => {
+                  if (selectedAnnotationId) {
+                    // Update the selected annotation's start time
+                    handleAnnotationUpdate(selectedAnnotationId, { t_start_ms: time })
+                  } else {
+                    // No annotation selected - just update local state (for new annotations)
+                    setStartTime(time)
+                  }
+                }}
+                onEndTimeChange={(time) => {
+                  if (selectedAnnotationId) {
+                    // Update the selected annotation's end time
+                    handleAnnotationUpdate(selectedAnnotationId, { t_end_ms: time })
+                  } else {
+                    // No annotation selected - just update local state (for new annotations)
+                    setEndTime(time)
+                  }
+                }}
                 onSeek={setCurrentTime}
+                disabled={!selectedAnnotationId}
               />
               <AnnotToolbar
                 onAddArrow={() => handleAddAnnotation('arrow')}

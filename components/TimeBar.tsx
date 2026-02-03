@@ -10,6 +10,7 @@ interface TimeBarProps {
   onStartTimeChange: (time: number) => void
   onEndTimeChange: (time: number) => void
   onSeek: (time: number) => void
+  disabled?: boolean
 }
 
 export default function TimeBar({
@@ -20,10 +21,9 @@ export default function TimeBar({
   onStartTimeChange,
   onEndTimeChange,
   onSeek,
+  disabled = false,
 }: TimeBarProps) {
-  const [dragging, setDragging] = useState<'start' | 'end' | 'playhead' | null>(
-    null
-  )
+  const [dragging, setDragging] = useState<'start' | 'end' | 'playhead' | null>(null)
   const trackRef = useRef<HTMLDivElement>(null)
 
   const formatTime = (ms: number) => {
@@ -33,167 +33,459 @@ export default function TimeBar({
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const getPositionFromEvent = (e: React.TouchEvent | React.MouseEvent) => {
-    const track = trackRef.current
-    if (!track) return 0
+  const formatTimeShort = (ms: number) => {
+    const totalSeconds = Math.floor(ms / 1000)
+    const mins = Math.floor(totalSeconds / 60)
+    const secs = totalSeconds % 60
+    if (mins > 0) {
+      return `${mins}:${secs.toString().padStart(2, '0')}`
+    }
+    return `${secs}s`
+  }
 
-    const rect = track.getBoundingClientRect()
-    const clientX =
-      'touches' in e ? e.touches[0]?.clientX ?? 0 : e.clientX
+  // Get time from mouse/touch position
+  const getTimeFromPosition = (clientX: number): number => {
+    if (!trackRef.current) return 0
+    const rect = trackRef.current.getBoundingClientRect()
     const x = clientX - rect.left
     const percentage = Math.max(0, Math.min(1, x / rect.width))
-    return Math.round(percentage * duration)
+    const time = Math.round(percentage * duration)
+    return Math.max(0, Math.min(time, duration))
   }
 
-  const handleStart = (
-    type: 'start' | 'end' | 'playhead',
-    e: React.TouchEvent | React.MouseEvent
-  ) => {
-    setDragging(type)
-    // Don't preventDefault on touch start - it's passive and not needed
-    // Scrolling prevention is handled by the document-level touchmove listener
-    if ('vibrate' in navigator) {
-      navigator.vibrate(10)
-    }
-  }
-
-  const handleMove = (e: React.TouchEvent | React.MouseEvent) => {
-    if (!dragging) return
-    e.preventDefault()
-
-    const time = getPositionFromEvent(e)
-    const snapped = Math.round(time / 100) * 100 // Snap to 0.1s
-
-    if (dragging === 'start') {
-      onStartTimeChange(Math.min(snapped, endTime - 100))
-    } else if (dragging === 'end') {
-      onEndTimeChange(Math.max(snapped, startTime + 100))
-    } else if (dragging === 'playhead') {
-      onSeek(snapped)
-    }
-  }
-
-  const handleEnd = () => {
-    setDragging(null)
-  }
-
+  // Handle mouse/touch move during drag
   useEffect(() => {
-    if (dragging) {
-      const handleMouseMove = (e: MouseEvent) => handleMove(e as any)
-      const handleMouseUp = () => handleEnd()
-      const handleTouchMove = (e: TouchEvent) => handleMove(e as any)
-      const handleTouchEnd = () => handleEnd()
+    if (!dragging) return
 
-      document.addEventListener('mousemove', handleMouseMove)
-      document.addEventListener('mouseup', handleMouseUp)
-      document.addEventListener('touchmove', handleTouchMove, { passive: false })
-      document.addEventListener('touchend', handleTouchEnd)
+    const handleMove = (e: MouseEvent | TouchEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
 
-      return () => {
-        document.removeEventListener('mousemove', handleMouseMove)
-        document.removeEventListener('mouseup', handleMouseUp)
-        document.removeEventListener('touchmove', handleTouchMove)
-        document.removeEventListener('touchend', handleTouchEnd)
+      if (!trackRef.current) {
+        console.warn('Track ref not available during drag')
+        return
+      }
+
+      const clientX = 'touches' in e ? e.touches[0]?.clientX ?? 0 : e.clientX
+      const time = getTimeFromPosition(clientX)
+      const snapped = Math.round(time / 100) * 100
+      const clampedTime = Math.max(0, Math.min(snapped, duration))
+      
+      console.log('Dragging:', dragging, 'time:', clampedTime, 'duration:', duration, 'startTime:', startTime, 'endTime:', endTime)
+
+      if (dragging === 'start') {
+        // Allow start to be anywhere before end (with minimum 100ms gap)
+        const newStart = Math.min(clampedTime, Math.max(0, endTime - 100))
+        console.log('Updating start to:', newStart, 'from:', startTime, 'endTime:', endTime)
+        if (newStart !== startTime) {
+          onStartTimeChange(newStart)
+          onSeek(newStart)
+        }
+      } else if (dragging === 'end') {
+        // Allow end to be anywhere after start (with minimum 100ms gap)
+        const newEnd = Math.max(clampedTime, Math.min(duration, startTime + 100))
+        console.log('Updating end to:', newEnd, 'from:', endTime, 'startTime:', startTime)
+        if (newEnd !== endTime) {
+          onEndTimeChange(newEnd)
+          onSeek(newEnd)
+        }
+      } else if (dragging === 'playhead') {
+        console.log('Seeking to:', clampedTime)
+        onSeek(clampedTime)
       }
     }
-  }, [dragging])
 
-  // Prevent division by zero
+    const handleEnd = () => {
+      setDragging(null)
+    }
+
+    document.addEventListener('mousemove', handleMove)
+    document.addEventListener('mouseup', handleEnd)
+    document.addEventListener('touchmove', handleMove, { passive: false })
+    document.addEventListener('touchend', handleEnd)
+
+    return () => {
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleEnd)
+      document.removeEventListener('touchmove', handleMove)
+      document.removeEventListener('touchend', handleEnd)
+    }
+  }, [dragging, duration, startTime, endTime, onStartTimeChange, onEndTimeChange, onSeek])
+
+  // Generate ruler ticks
+  const getRulerTicks = () => {
+    if (duration <= 0) return { major: [], minor: [] }
+    
+    const majorTicks: { time: number; label: string }[] = []
+    const minorTicks: number[] = []
+    
+    let majorInterval: number
+    if (duration < 10000) {
+      majorInterval = 1000
+    } else if (duration < 60000) {
+      majorInterval = 5000
+    } else {
+      majorInterval = 10000
+    }
+    
+    for (let time = 0; time <= duration; time += majorInterval) {
+      majorTicks.push({ time, label: formatTimeShort(time) })
+    }
+    if (majorTicks[majorTicks.length - 1]?.time !== duration) {
+      majorTicks.push({ time: duration, label: formatTimeShort(duration) })
+    }
+    
+    for (let i = 0; i < majorTicks.length - 1; i++) {
+      const start = majorTicks[i].time
+      const end = majorTicks[i + 1].time
+      const interval = (end - start) / 5
+      for (let j = 1; j < 5; j++) {
+        minorTicks.push(start + interval * j)
+      }
+    }
+    
+    return { major: majorTicks, minor: minorTicks }
+  }
+
   const safeDuration = duration > 0 ? duration : 1
   const startPercent = (startTime / safeDuration) * 100
   const endPercent = (endTime / safeDuration) * 100
   const currentPercent = (currentTime / safeDuration) * 100
+  const { major, minor } = getRulerTicks()
+
+  const handleLineMouseDown = (type: 'start' | 'end' | 'playhead', e: React.MouseEvent) => {
+    // Only block start/end when disabled, playhead should always work
+    if (disabled && (type === 'start' || type === 'end')) return
+    e.preventDefault()
+    e.stopPropagation()
+    console.log('Dragging started:', type, { duration, currentTime, startTime, endTime })
+    setDragging(type)
+    if ('vibrate' in navigator) navigator.vibrate(10)
+  }
+
+  const handleLineTouchStart = (type: 'start' | 'end' | 'playhead', e: React.TouchEvent) => {
+    // Only block start/end when disabled, playhead should always work
+    if (disabled && (type === 'start' || type === 'end')) return
+    e.preventDefault()
+    e.stopPropagation()
+    console.log('Touch dragging started:', type, { duration, currentTime, startTime, endTime })
+    setDragging(type)
+    if ('vibrate' in navigator) navigator.vibrate(10)
+  }
+
+  const handleTimelineClick = (e: React.MouseEvent) => {
+    // Don't seek if we're dragging a line
+    if (dragging) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+    // Always allow clicking timeline to seek
+    if (!trackRef.current) {
+      console.warn('Track ref not available')
+      return
+    }
+    const time = getTimeFromPosition(e.clientX)
+    console.log('Timeline clicked, seeking to:', time, { duration })
+    onSeek(time)
+  }
+
+  const handleTimelineTouch = (e: React.TouchEvent) => {
+    // Don't seek if we're dragging a line
+    if (dragging) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+    // Always allow touching timeline to seek
+    if (!trackRef.current) {
+      console.warn('Track ref not available')
+      return
+    }
+    const time = getTimeFromPosition(e.touches[0].clientX)
+    console.log('Timeline touched, seeking to:', time, { duration })
+    onSeek(time)
+  }
+
+  // Debug: log when component renders
+  useEffect(() => {
+    console.log('TimeBar rendered:', { duration, currentTime, startTime, endTime, disabled })
+  }, [duration, currentTime, startTime, endTime, disabled])
+
+  if (duration <= 0) {
+    return (
+      <div className="w-full p-4 text-center text-gray-500 dark:text-gray-400">
+        <p>Video duration not available. Please record or upload a video first.</p>
+        <p className="text-xs mt-2">Duration: {duration}ms</p>
+      </div>
+    )
+  }
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400">
-        <div className="flex flex-col">
-          <span className="text-xs text-gray-500">Start: {formatTime(startTime)}</span>
-          <span className="font-semibold text-base">Now: {formatTime(currentTime)}</span>
+    <div className="w-full space-y-2">
+      {/* Time info */}
+      <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400 px-1">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+            <span className="text-xs font-medium">Start: {formatTime(startTime)}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+            <span className="text-xs font-medium">End: {formatTime(endTime)}</span>
+          </div>
         </div>
         <div className="flex flex-col items-end">
-          <span className="text-xs text-gray-500">End: {formatTime(endTime)}</span>
+          <span className="font-semibold text-base">Now: {formatTime(currentTime)}</span>
           <span className="text-xs text-gray-500">Total: {formatTime(duration)}</span>
         </div>
       </div>
 
-      <div
-        ref={trackRef}
-        className="relative h-12 bg-gray-200 dark:bg-gray-700 rounded-lg touch-target"
-        onMouseDown={(e) => {
-          const time = getPositionFromEvent(e)
-          onSeek(time)
-        }}
-        onTouchStart={(e) => {
-          // Don't preventDefault - let the touch event be passive
-          const time = getPositionFromEvent(e)
-          onSeek(time)
-        }}
-      >
-        {/* Active range */}
+      {/* Ruler */}
+      <div className="relative w-full bg-white dark:bg-gray-900 border-t border-b border-gray-300 dark:border-gray-700 py-2">
         <div
-          className="absolute h-full bg-blue-500 dark:bg-blue-600"
-          style={{
-            left: `${startPercent}%`,
-            width: `${endPercent - startPercent}%`,
+          ref={trackRef}
+          className="relative w-full h-20 select-none"
+          onClick={(e) => {
+            // Don't seek if clicking on a draggable line
+            if ((e.target as HTMLElement).closest('[data-draggable-line]')) {
+              return
+            }
+            handleTimelineClick(e)
           }}
-        />
-
-        {/* Start thumb */}
-        <div
-          className="absolute top-0 w-4 h-full bg-blue-700 dark:bg-blue-500 cursor-grab active:cursor-grabbing touch-target"
-          style={{ left: `calc(${startPercent}% - 8px)` }}
-          onMouseDown={(e) => handleStart('start', e)}
-          onTouchStart={(e) => handleStart('start', e)}
-        />
-
-        {/* End thumb */}
-        <div
-          className="absolute top-0 w-4 h-full bg-blue-700 dark:bg-blue-500 cursor-grab active:cursor-grabbing touch-target"
-          style={{ left: `calc(${endPercent}% - 8px)` }}
-          onMouseDown={(e) => handleStart('end', e)}
-          onTouchStart={(e) => handleStart('end', e)}
-        />
-
-        {/* Playhead - white line showing current position */}
-        <div
-          className="absolute top-0 w-1 h-full bg-white dark:bg-gray-200 cursor-grab active:cursor-grabbing z-10 shadow-lg"
-          style={{ left: `${currentPercent}%` }}
-          onMouseDown={(e) => handleStart('playhead', e)}
-          onTouchStart={(e) => handleStart('playhead', e)}
+          onTouchStart={(e) => {
+            // Don't seek if touching a draggable line
+            if ((e.target as HTMLElement).closest('[data-draggable-line]')) {
+              return
+            }
+            handleTimelineTouch(e)
+          }}
         >
-          {/* Playhead indicator dot */}
-          <div className="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-white dark:bg-gray-200 rounded-full border-2 border-gray-800 dark:border-gray-300"></div>
+          {/* Ruler line */}
+          <div className="absolute top-8 left-0 right-0 h-0.5 bg-gray-400 dark:bg-gray-600"></div>
+
+          {/* Minor ticks */}
+          {minor.map((time) => {
+            const percent = (time / safeDuration) * 100
+            return (
+              <div
+                key={`minor-${time}`}
+                className="absolute top-8 h-2 w-px bg-gray-400 dark:bg-gray-500"
+                style={{ left: `${percent}%`, transform: 'translateX(-50%)' }}
+              />
+            )
+          })}
+
+          {/* Major ticks */}
+          {major.map(({ time, label }) => {
+            const percent = (time / safeDuration) * 100
+            return (
+              <div
+                key={`major-${time}`}
+                className="absolute top-0 flex flex-col items-center"
+                style={{ left: `${percent}%`, transform: 'translateX(-50%)' }}
+              >
+                <div className="w-px h-8 bg-gray-700 dark:bg-gray-300"></div>
+                <div className="text-xs font-medium text-gray-700 dark:text-gray-300 mt-1 whitespace-nowrap">
+                  {label}
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Selected range */}
+          {!disabled && startTime < endTime && (
+            <div
+              className="absolute top-8 h-2 bg-blue-400 dark:bg-blue-600 opacity-40"
+              style={{
+                left: `${startPercent}%`,
+                width: `${endPercent - startPercent}%`,
+                transform: 'translateY(-50%)',
+              }}
+            />
+          )}
+
+          {/* Start line */}
+          <div
+            data-draggable-line="start"
+            className={`absolute top-0 w-4 h-full z-20 ${
+              disabled
+                ? 'cursor-not-allowed opacity-50'
+                : 'cursor-grab active:cursor-grabbing'
+            }`}
+            style={{ 
+              left: `${startPercent}%`,
+              transform: 'translateX(-50%)',
+              pointerEvents: disabled ? 'none' : 'auto',
+              touchAction: 'none',
+            }}
+            onMouseDown={(e) => {
+              console.log('Start line mousedown, disabled:', disabled, 'startPercent:', startPercent)
+              e.stopPropagation()
+              handleLineMouseDown('start', e)
+            }}
+            onTouchStart={(e) => {
+              console.log('Start line touchstart, disabled:', disabled)
+              e.stopPropagation()
+              handleLineTouchStart('start', e)
+            }}
+          >
+            {/* Vertical line */}
+            <div
+              className={`absolute top-0 left-1/2 w-1 h-full ${
+                disabled ? 'bg-gray-400 dark:bg-gray-600' : 'bg-green-500'
+              }`}
+              style={{ transform: 'translateX(-50%)' }}
+            />
+            {/* Triangle indicator */}
+            <div
+              className={`absolute top-8 left-1/2 transform -translate-x-1/2 -translate-y-1/2 ${
+                disabled ? 'border-gray-400' : 'border-green-500'
+              }`}
+              style={{
+                width: 0,
+                height: 0,
+                borderLeft: '10px solid transparent',
+                borderRight: '10px solid transparent',
+                borderTop: `20px solid ${disabled ? '#9ca3af' : '#10b981'}`,
+                pointerEvents: 'none',
+              }}
+            />
+            {!disabled && (
+              <div className="absolute top-12 left-1/2 transform -translate-x-1/2 text-[10px] font-bold text-green-600 dark:text-green-400 whitespace-nowrap pointer-events-none">
+                START
+              </div>
+            )}
+          </div>
+
+          {/* End line */}
+          <div
+            data-draggable-line="end"
+            className={`absolute top-0 w-4 h-full z-20 ${
+              disabled
+                ? 'cursor-not-allowed opacity-50'
+                : 'cursor-grab active:cursor-grabbing'
+            }`}
+            style={{ 
+              left: `${endPercent}%`,
+              transform: 'translateX(-50%)',
+              pointerEvents: disabled ? 'none' : 'auto',
+              touchAction: 'none',
+            }}
+            onMouseDown={(e) => {
+              console.log('End line mousedown, disabled:', disabled, 'endPercent:', endPercent)
+              e.stopPropagation()
+              handleLineMouseDown('end', e)
+            }}
+            onTouchStart={(e) => {
+              console.log('End line touchstart, disabled:', disabled)
+              e.stopPropagation()
+              handleLineTouchStart('end', e)
+            }}
+          >
+            {/* Vertical line */}
+            <div
+              className={`absolute top-0 left-1/2 w-1 h-full ${
+                disabled ? 'bg-gray-400 dark:bg-gray-600' : 'bg-red-500'
+              }`}
+              style={{ transform: 'translateX(-50%)' }}
+            />
+            {/* Triangle indicator */}
+            <div
+              className={`absolute top-8 left-1/2 transform -translate-x-1/2 -translate-y-1/2 ${
+                disabled ? 'border-gray-400' : 'border-red-500'
+              }`}
+              style={{
+                width: 0,
+                height: 0,
+                borderLeft: '10px solid transparent',
+                borderRight: '10px solid transparent',
+                borderTop: `20px solid ${disabled ? '#9ca3af' : '#ef4444'}`,
+                pointerEvents: 'none',
+              }}
+            />
+            {!disabled && (
+              <div className="absolute top-12 left-1/2 transform -translate-x-1/2 text-[10px] font-bold text-red-600 dark:text-red-400 whitespace-nowrap pointer-events-none">
+                END
+              </div>
+            )}
+          </div>
+
+          {/* Playhead */}
+          <div
+            data-draggable-line="playhead"
+            className="absolute top-0 w-2 h-full bg-white dark:bg-gray-200 cursor-grab active:cursor-grabbing z-30 shadow-lg hover:bg-gray-100 dark:hover:bg-gray-300"
+            style={{ 
+              left: `${currentPercent}%`,
+              transform: 'translateX(-50%)',
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              handleLineMouseDown('playhead', e)
+            }}
+            onTouchStart={(e) => {
+              e.stopPropagation()
+              handleLineTouchStart('playhead', e)
+            }}
+          >
+            <div
+              className="absolute top-8 left-1/2 transform -translate-x-1/2 -translate-y-1/2"
+              style={{
+                width: 0,
+                height: 0,
+                borderLeft: '8px solid transparent',
+                borderRight: '8px solid transparent',
+                borderTop: '16px solid white',
+                filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.3))',
+              }}
+            />
+          </div>
         </div>
       </div>
 
-      <div className="flex gap-2">
-        <button
-          onClick={() => {
-            onStartTimeChange(currentTime)
-            if ('vibrate' in navigator) navigator.vibrate(10)
-          }}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg touch-target text-sm font-semibold"
-        >
-          Set Start = {formatTime(currentTime)}
-        </button>
-        <button
-          onClick={() => {
-            onEndTimeChange(currentTime)
-            if ('vibrate' in navigator) navigator.vibrate(10)
-          }}
-          className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded-lg touch-target text-sm font-semibold"
-        >
-          Set End = {formatTime(currentTime)}
-        </button>
-      </div>
+      {/* Buttons */}
+      {!disabled && (
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              onStartTimeChange(currentTime)
+              onSeek(currentTime)
+              if ('vibrate' in navigator) navigator.vibrate(10)
+            }}
+            className="flex-1 py-2 px-4 rounded-lg touch-target text-sm font-semibold bg-green-600 hover:bg-green-700 text-white transition-colors"
+          >
+            Set Start = {formatTime(currentTime)}
+          </button>
+          <button
+            onClick={() => {
+              onEndTimeChange(currentTime)
+              onSeek(currentTime)
+              if ('vibrate' in navigator) navigator.vibrate(10)
+            }}
+            className="flex-1 py-2 px-4 rounded-lg touch-target text-sm font-semibold bg-red-600 hover:bg-red-700 text-white transition-colors"
+          >
+            Set End = {formatTime(currentTime)}
+          </button>
+        </div>
+      )}
       
-      {/* Visual indicator showing what will be selected */}
+      {/* Info */}
       {duration > 0 && (
         <div className="text-xs text-center text-gray-500 dark:text-gray-400">
-          Selected range: {formatTime(endTime - startTime)} ({formatTime(startTime)} → {formatTime(endTime)})
+          {disabled ? (
+            <span className="text-amber-600 dark:text-amber-400">
+              Select an annotation (arrow or label) to edit its timeline
+            </span>
+          ) : (
+            <>
+              Range: {formatTime(endTime - startTime)} ({formatTime(startTime)} → {formatTime(endTime)})
+            </>
+          )}
         </div>
       )}
     </div>
   )
 }
+
+
+

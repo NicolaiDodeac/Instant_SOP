@@ -14,6 +14,7 @@ interface StepPlayerProps {
   selectedAnnotationId: string | null
   onSelectAnnotation: (id: string | null) => void
   onTimeUpdate?: (time: number) => void
+  onDurationUpdate?: (duration: number) => void // Callback when video duration is available
   showControls?: boolean
   seekTime?: number // External seek control
   autoPlay?: boolean // Auto-play when true
@@ -31,6 +32,7 @@ export default function StepPlayer({
   selectedAnnotationId,
   onSelectAnnotation,
   onTimeUpdate,
+  onDurationUpdate,
   showControls = false,
   seekTime,
   autoPlay = false,
@@ -112,8 +114,12 @@ export default function StepPlayer({
 
     const handleLoadedMetadata = () => {
       // Video metadata loaded - duration is now available
-      if (onTimeUpdate && video.duration) {
-        // Optionally notify parent of duration if needed
+      if (video.duration && onDurationUpdate) {
+        const durationMs = Math.round(video.duration * 1000)
+        onDurationUpdate(durationMs)
+        if (process.env.NODE_ENV === 'development') {
+          console.log('Video duration loaded:', durationMs, 'ms')
+        }
       }
     }
 
@@ -140,7 +146,7 @@ export default function StepPlayer({
       video.removeEventListener('ended', handleEnded)
       video.removeEventListener('loadedmetadata', handleLoadedMetadata)
     }
-  }, [onTimeUpdate, videoUrl])
+  }, [onTimeUpdate, onDurationUpdate, videoUrl])
 
   // Handle external seek
   useEffect(() => {
@@ -686,29 +692,36 @@ export default function StepPlayer({
       </div>
 
       {!filterAnnotationsByTime && ( // Only show zoom controls in editor mode
-        <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400">
-          <span>Zoom: {Math.round(scale * 100)}%</span>
-          <button
-            onClick={() => setScale(Math.max(0.5, scale - 0.25))}
-            className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded touch-target"
-          >
-            −
-          </button>
-          <button
-            onClick={() => {
-              setScale(1)
-              setPanOffset({ x: 0, y: 0 })
-            }}
-            className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded touch-target"
-          >
-            Reset
-          </button>
-          <button
-            onClick={() => setScale(Math.min(3, scale + 0.25))}
-            className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded touch-target"
-          >
-            +
-          </button>
+        <div className="flex items-center justify-center gap-3 py-2">
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-300 min-w-[80px] text-center">
+            {Math.round(scale * 100)}%
+          </span>
+          <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+            <button
+              onClick={() => setScale(Math.max(0.5, scale - 0.25))}
+              className="w-10 h-10 flex items-center justify-center bg-white dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 active:bg-gray-300 dark:active:bg-gray-500 transition-colors touch-target shadow-sm"
+              aria-label="Zoom out"
+            >
+              <span className="text-lg font-semibold text-gray-700 dark:text-gray-300">−</span>
+            </button>
+            <button
+              onClick={() => {
+                setScale(1)
+                setPanOffset({ x: 0, y: 0 })
+              }}
+              className="px-4 h-10 flex items-center justify-center bg-white dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 active:bg-gray-300 dark:active:bg-gray-500 transition-colors touch-target shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300"
+              aria-label="Reset zoom"
+            >
+              Reset
+            </button>
+            <button
+              onClick={() => setScale(Math.min(3, scale + 0.25))}
+              className="w-10 h-10 flex items-center justify-center bg-white dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 active:bg-gray-300 dark:active:bg-gray-500 transition-colors touch-target shadow-sm"
+              aria-label="Zoom in"
+            >
+              <span className="text-lg font-semibold text-gray-700 dark:text-gray-300">+</span>
+            </button>
+          </div>
         </div>
       )}
     </div>

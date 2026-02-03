@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
-import StepPlayer from '@/components/StepPlayer'
+import StepCard from '@/components/StepCard'
 
 export default function PublicViewerPage() {
   const params = useParams()
@@ -14,11 +14,7 @@ export default function PublicViewerPage() {
   const [sop, setSop] = useState<SOP | null>(null)
   const [steps, setSteps] = useState<SOPStep[]>([])
   const [annotations, setAnnotations] = useState<Record<string, StepAnnotation[]>>({})
-  const [currentStepIdx, setCurrentStepIdx] = useState(0)
-  const [videoUrl, setVideoUrl] = useState<string | null>(null)
-  const [currentTime, setCurrentTime] = useState(0)
-  const [startTime, setStartTime] = useState(0)
-  const [endTime, setEndTime] = useState(0)
+  const [videoUrls, setVideoUrls] = useState<Record<string, string | null>>({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -26,10 +22,10 @@ export default function PublicViewerPage() {
   }, [shareSlug])
 
   useEffect(() => {
-    if (steps.length > 0 && currentStepIdx < steps.length) {
-      loadStepVideo(steps[currentStepIdx])
+    if (steps.length > 0) {
+      loadAllVideos()
     }
-  }, [steps, currentStepIdx])
+  }, [steps])
 
   async function loadSOP() {
     try {
@@ -60,7 +56,7 @@ export default function PublicViewerPage() {
 
       // Load annotations
       if (stepsData && stepsData.length > 0) {
-        const stepIds = stepsData.map((s) => s.id)
+        const stepIds = stepsData.map((s: SOPStep) => s.id)
         const { data: annsData } = await supabase
           .from('step_annotations')
           .select('*')
@@ -68,7 +64,7 @@ export default function PublicViewerPage() {
 
         if (annsData) {
           const annsMap: Record<string, StepAnnotation[]> = {}
-          annsData.forEach((ann) => {
+          annsData.forEach((ann: any) => {
             if (!annsMap[ann.step_id]) {
               annsMap[ann.step_id] = []
             }
@@ -84,53 +80,32 @@ export default function PublicViewerPage() {
     }
   }
 
-  async function loadStepVideo(step: SOPStep) {
-    if (!step.video_path) {
-      setVideoUrl(null)
-      return
-    }
-
-    try {
-      const res = await fetch(
-        `/api/videos/signed-url?path=${encodeURIComponent(step.video_path)}`
-      )
-      if (res.ok) {
-        const { url } = await res.json()
-        setVideoUrl(url)
-
-        // Set time range from first annotation
-        const stepAnns = annotations[step.id] || []
-        if (stepAnns.length > 0) {
-          const firstAnn = stepAnns[0]
-          setStartTime(firstAnn.t_start_ms)
-          setEndTime(firstAnn.t_end_ms)
-        } else {
-          setStartTime(0)
-          setEndTime(step.duration_ms || 0)
-        }
+  async function loadAllVideos() {
+    const urls: Record<string, string | null> = {}
+    
+    for (const step of steps) {
+      if (!step.video_path) {
+        urls[step.id] = null
+        continue
       }
-    } catch (err) {
-      console.error('Error loading video:', err)
-    }
-  }
 
-  const currentStep = steps[currentStepIdx]
-  const currentAnnotations = currentStep
-    ? annotations[currentStep.id] || []
-    : []
-
-  const handleNextStep = () => {
-    if (currentStepIdx < steps.length - 1) {
-      setCurrentStepIdx(currentStepIdx + 1)
-      setCurrentTime(0)
+      try {
+        const res = await fetch(
+          `/api/videos/signed-url?path=${encodeURIComponent(step.video_path)}`
+        )
+        if (res.ok) {
+          const { url } = await res.json()
+          urls[step.id] = url
+        } else {
+          urls[step.id] = null
+        }
+      } catch (err) {
+        console.error('Error loading video for step:', step.id, err)
+        urls[step.id] = null
+      }
     }
-  }
-
-  const handlePrevStep = () => {
-    if (currentStepIdx > 0) {
-      setCurrentStepIdx(currentStepIdx - 1)
-      setCurrentTime(0)
-    }
+    
+    setVideoUrls(urls)
   }
 
 
@@ -153,7 +128,7 @@ export default function PublicViewerPage() {
   return (
     <div className="min-h-screen safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
       {/* Header */}
-      <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
+      <div className="sticky top-0 z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
         <div className="p-4">
           <h1 className="text-xl font-bold text-center">{sop.title}</h1>
           {sop.description && (
@@ -164,58 +139,19 @@ export default function PublicViewerPage() {
         </div>
       </div>
 
-      {/* Step indicator */}
-      <div className="p-4 text-center">
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          Step {currentStepIdx + 1} of {steps.length}
-        </p>
-        <h2 className="text-lg font-semibold mt-1">
-          {currentStep?.title}
-        </h2>
+      {/* Scrollable feed of steps */}
+      <div className="scroll-smooth">
+        {steps.map((step, idx) => (
+          <StepCard
+            key={step.id}
+            step={step}
+            annotations={annotations[step.id] || []}
+            videoUrl={videoUrls[step.id] || null}
+            stepNumber={idx + 1}
+            totalSteps={steps.length}
+          />
+        ))}
       </div>
-
-      {/* Video player */}
-      {currentStep && (
-        <div className="p-4 space-y-4">
-          {videoUrl ? (
-            <StepPlayer
-              videoUrl={videoUrl}
-              annotations={currentAnnotations}
-              currentTime={currentTime}
-              startTime={startTime}
-              endTime={endTime}
-              onAnnotationUpdate={() => {}}
-              onAnnotationDelete={() => {}}
-              selectedAnnotationId={null}
-              onSelectAnnotation={() => {}}
-              onTimeUpdate={setCurrentTime}
-              showControls={true}
-            />
-          ) : (
-            <div className="w-full aspect-video bg-black rounded-lg flex items-center justify-center text-gray-400">
-              No video available
-            </div>
-          )}
-
-          {/* Navigation */}
-          <div className="flex gap-4">
-            <button
-              onClick={handlePrevStep}
-              disabled={currentStepIdx === 0}
-              className="flex-1 bg-gray-600 hover:bg-gray-700 disabled:opacity-50 text-white font-semibold py-4 px-4 rounded-lg touch-target"
-            >
-              ← Previous
-            </button>
-            <button
-              onClick={handleNextStep}
-              disabled={currentStepIdx === steps.length - 1}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-4 px-4 rounded-lg touch-target"
-            >
-              Next Step →
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Install prompt */}
       <div className="p-4 text-center text-sm text-gray-600 dark:text-gray-400">

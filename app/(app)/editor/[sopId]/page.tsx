@@ -321,11 +321,23 @@ export default function EditorPage() {
   }
 
   async function handleAddAnnotation(kind: 'arrow' | 'label') {
-    if (!currentStepId) return
+    // Get the current step ID directly from state to avoid closure issues
+    const stepId = currentStepId
+    if (!stepId) {
+      console.error('Cannot add annotation: no step selected')
+      return
+    }
+
+    // Verify the step exists
+    const step = steps.find((s) => s.id === stepId)
+    if (!step) {
+      console.error('Cannot add annotation: step not found', { stepId, steps })
+      return
+    }
 
     const newAnn: StepAnnotation = {
       id: nanoid(),
-      step_id: currentStepId,
+      step_id: stepId, // Use the local variable to ensure we have the correct step ID
       t_start_ms: startTime,
       t_end_ms: endTime,
       kind,
@@ -345,13 +357,17 @@ export default function EditorPage() {
         startTime, 
         endTime, 
         currentTime,
-        currentStepId,
-        step: steps.find(s => s.id === currentStepId)
+        currentStepId: stepId,
+        stepTitle: step.title,
+        stepIdx: step.idx,
+        allSteps: steps.map(s => ({ id: s.id, title: s.title, idx: s.idx }))
       })
     }
 
-    const updatedAnns = [...currentAnnotations, newAnn]
-    setAnnotations({ ...annotations, [currentStepId]: updatedAnns })
+    // Get current annotations for this specific step
+    const stepAnnotations = annotations[stepId] || []
+    const updatedAnns = [...stepAnnotations, newAnn]
+    setAnnotations({ ...annotations, [stepId]: updatedAnns })
     
     if (process.env.NODE_ENV === 'development') {
       console.log('Updated annotations:', updatedAnns)
@@ -402,15 +418,21 @@ export default function EditorPage() {
         // Update local annotation with Supabase-generated UUID
         // Replace the nanoid with the database UUID so future updates work
         const annotationWithDbId = { ...newAnn, id: data.id }
-        const updatedAnnsWithDbId = updatedAnns.map(ann => 
-          ann.id === newAnn.id ? annotationWithDbId : ann
-        )
-        setAnnotations({ ...annotations, [currentStepId]: updatedAnnsWithDbId })
+        // Use stepId variable to ensure we update the correct step's annotations
+        setAnnotations(prev => {
+          const stepAnnotations = prev[stepId] || []
+          const updatedAnnsWithDbId = stepAnnotations.map(ann => 
+            ann.id === newAnn.id ? annotationWithDbId : ann
+          )
+          return { ...prev, [stepId]: updatedAnnsWithDbId }
+        })
         
         if (process.env.NODE_ENV === 'development') {
           console.log('Annotation saved to DB, updated local ID:', { 
             oldId: newAnn.id, 
             newId: data.id,
+            stepId,
+            stepTitle: step.title,
             data 
           })
         }
@@ -522,7 +544,10 @@ export default function EditorPage() {
   async function handlePublish() {
     if (!sop) return
 
-    const shareSlug = nanoid(8)
+    // Preserve existing share_slug if SOP is already published
+    // Only generate a new one if it doesn't exist
+    const shareSlug = sop.share_slug || nanoid(8)
+    
     const { error } = await supabase
       .from('sops')
       .update({ published: true, share_slug: shareSlug })

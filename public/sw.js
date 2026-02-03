@@ -29,41 +29,67 @@ self.addEventListener('activate', (event) => {
 })
 
 self.addEventListener('fetch', (event) => {
-  // Skip navigation requests - let Next.js handle routing completely
-  if (event.request.mode === 'navigate') {
+  const { request } = event
+  const url = new URL(request.url)
+
+  // Skip non-HTTP(S) schemes (chrome-extension://, file://, etc.)
+  if (!url.protocol.startsWith('http')) {
     return
   }
 
-  // Don't cache video files or API routes
+  // Skip navigation requests - let Next.js handle routing completely
+  if (request.mode === 'navigate') {
+    return
+  }
+
+  // Skip all API requests (internal and external)
+  // This includes Supabase auth, our API routes, and any external APIs
+  // IMPORTANT: Return early without calling event.respondWith() to let the browser handle the request
   if (
-    event.request.url.includes('/api/') ||
-    event.request.url.includes('.mp4') ||
-    event.request.url.includes('sop-videos')
+    request.url.includes('/api/') ||
+    request.url.includes('/auth/') ||
+    request.url.includes('supabase.co') ||
+    request.url.includes('supabase.io') ||
+    request.url.includes('supabase') ||
+    request.method !== 'GET' ||
+    request.url.includes('.mp4') ||
+    request.url.includes('sop-videos')
+  ) {
+    return // Let browser handle this request, don't intercept
+  }
+
+  // Only intercept static assets (scripts, styles, images, fonts)
+  if (
+    request.destination !== 'script' &&
+    request.destination !== 'style' &&
+    request.destination !== 'image' &&
+    request.destination !== 'font'
   ) {
     return
   }
 
   event.respondWith(
-    caches.match(event.request).then((response) => {
+    caches.match(request).then((cachedResponse) => {
       return (
-        response ||
-        fetch(event.request, {
+        cachedResponse ||
+        fetch(request, {
           redirect: 'follow',
         }).then((fetchResponse) => {
           // Only cache successful, non-redirect responses
           if (
             fetchResponse.status === 200 &&
             !fetchResponse.redirected &&
-            (event.request.destination === 'script' ||
-              event.request.destination === 'style' ||
-              event.request.destination === 'image')
+            fetchResponse.type === 'basic'
           ) {
             const responseToCache = fetchResponse.clone()
             caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseToCache)
+              cache.put(request, responseToCache)
             })
           }
           return fetchResponse
+        }).catch(() => {
+          // If fetch fails, return cached version if available
+          return cachedResponse
         })
       )
     })

@@ -27,7 +27,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <link rel="icon" href="/favicon-32x32.png" />
         <link rel="apple-touch-icon" href="/ios/apple-touch-icon-180x180.png" />
@@ -45,7 +45,7 @@ export default function RootLayout({
           }}
         /> */}
       </head>
-      <body className="min-h-screen bg-background text-foreground">
+      <body className="min-h-screen bg-background text-foreground" suppressHydrationWarning>
         {children}
       </body>
     </html>

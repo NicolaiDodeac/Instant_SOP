@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP } from '@/lib/types'
 import { listDrafts } from '@/lib/idb'
 import type { DraftSOP } from '@/lib/types'
@@ -14,7 +14,7 @@ export default function DashboardPage() {
   const [newTitle, setNewTitle] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const router = useRouter()
-  const supabase = createClient()
+  const supabase = useSupabaseClient()
 
   useEffect(() => {
     loadSOPs()

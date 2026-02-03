@@ -2,19 +2,14 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'next/navigation'
-import dynamic from 'next/dynamic'
-import { createClient } from '@/lib/supabase/client'
+import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
-
-// Dynamically import StepPlayer to avoid SSR and React instance issues with react-konva
-const StepPlayer = dynamic(() => import('@/components/StepPlayer'), {
-  ssr: false,
-})
+import StepPlayer from '@/components/StepPlayer'
 
 export default function PublicViewerPage() {
   const params = useParams()
   const shareSlug = params.share as string
-  const supabase = createClient()
+  const supabase = useSupabaseClient()
 
   const [sop, setSop] = useState<SOP | null>(null)
   const [steps, setSteps] = useState<SOPStep[]>([])

@@ -50,7 +50,8 @@ export default function TimeBar({
     e: React.TouchEvent | React.MouseEvent
   ) => {
     setDragging(type)
-    e.preventDefault()
+    // Don't preventDefault on touch start - it's passive and not needed
+    // Scrolling prevention is handled by the document-level touchmove listener
     if ('vibrate' in navigator) {
       navigator.vibrate(10)
     }
@@ -97,15 +98,23 @@ export default function TimeBar({
     }
   }, [dragging])
 
-  const startPercent = (startTime / duration) * 100
-  const endPercent = (endTime / duration) * 100
-  const currentPercent = (currentTime / duration) * 100
+  // Prevent division by zero
+  const safeDuration = duration > 0 ? duration : 1
+  const startPercent = (startTime / safeDuration) * 100
+  const endPercent = (endTime / safeDuration) * 100
+  const currentPercent = (currentTime / safeDuration) * 100
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400">
-        <span>{formatTime(startTime)}</span>
-        <span>{formatTime(endTime)}</span>
+        <div className="flex flex-col">
+          <span className="text-xs text-gray-500">Start: {formatTime(startTime)}</span>
+          <span className="font-semibold text-base">Now: {formatTime(currentTime)}</span>
+        </div>
+        <div className="flex flex-col items-end">
+          <span className="text-xs text-gray-500">End: {formatTime(endTime)}</span>
+          <span className="text-xs text-gray-500">Total: {formatTime(duration)}</span>
+        </div>
       </div>
 
       <div
@@ -116,6 +125,7 @@ export default function TimeBar({
           onSeek(time)
         }}
         onTouchStart={(e) => {
+          // Don't preventDefault - let the touch event be passive
           const time = getPositionFromEvent(e)
           onSeek(time)
         }}
@@ -145,13 +155,16 @@ export default function TimeBar({
           onTouchStart={(e) => handleStart('end', e)}
         />
 
-        {/* Playhead */}
+        {/* Playhead - white line showing current position */}
         <div
-          className="absolute top-0 w-1 h-full bg-white dark:bg-gray-200 cursor-grab active:cursor-grabbing"
+          className="absolute top-0 w-1 h-full bg-white dark:bg-gray-200 cursor-grab active:cursor-grabbing z-10 shadow-lg"
           style={{ left: `${currentPercent}%` }}
           onMouseDown={(e) => handleStart('playhead', e)}
           onTouchStart={(e) => handleStart('playhead', e)}
-        />
+        >
+          {/* Playhead indicator dot */}
+          <div className="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-white dark:bg-gray-200 rounded-full border-2 border-gray-800 dark:border-gray-300"></div>
+        </div>
       </div>
 
       <div className="flex gap-2">
@@ -160,20 +173,27 @@ export default function TimeBar({
             onStartTimeChange(currentTime)
             if ('vibrate' in navigator) navigator.vibrate(10)
           }}
-          className="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-lg touch-target text-sm"
+          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg touch-target text-sm font-semibold"
         >
-          Set Start = Now
+          Set Start = {formatTime(currentTime)}
         </button>
         <button
           onClick={() => {
             onEndTimeChange(currentTime)
             if ('vibrate' in navigator) navigator.vibrate(10)
           }}
-          className="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-lg touch-target text-sm"
+          className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded-lg touch-target text-sm font-semibold"
         >
-          Set End = Now
+          Set End = {formatTime(currentTime)}
         </button>
       </div>
+      
+      {/* Visual indicator showing what will be selected */}
+      {duration > 0 && (
+        <div className="text-xs text-center text-gray-500 dark:text-gray-400">
+          Selected range: {formatTime(endTime - startTime)} ({formatTime(startTime)} → {formatTime(endTime)})
+        </div>
+      )}
     </div>
   )
 }

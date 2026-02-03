@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { useSupabaseClient } from '@/lib/supabase/client'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -10,33 +10,80 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const router = useRouter()
-  const supabase = createClient()
+  const supabase = useSupabaseClient()
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setError(null)
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
+    try {
+      // Check if Supabase URL is accessible
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      if (!supabaseUrl) {
+        setError('Supabase configuration is missing. Please check your environment variables.')
+        setLoading(false)
+        return
+      }
 
-    if (error) {
-      setError(error.message)
-      setLoading(false)
-    } else if (data.user) {
-      // Wait for session to be established and cookies to be set
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session) {
-        // Use window.location for a hard redirect to ensure cookies are sent to middleware
-        window.location.href = '/dashboard'
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
+
+      if (error) {
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Supabase auth error:', error)
+        }
+        
+        // More user-friendly error messages
+        let errorMessage = error.message
+        if (error.message === 'Invalid login credentials') {
+          errorMessage = 'Invalid email or password. Please check your credentials and try again.'
+        } else if (error.message.includes('Email not confirmed')) {
+          errorMessage = 'Please check your email and confirm your account before signing in.'
+        } else if (error.message.includes('Too many requests')) {
+          errorMessage = 'Too many login attempts. Please wait a moment and try again.'
+        }
+        
+        setError(errorMessage)
+        setLoading(false)
+      } else if (data.user) {
+        // Wait for session to be established and cookies to be set
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) {
+          // Use window.location for a hard redirect to ensure cookies are sent to middleware
+          window.location.href = '/dashboard'
+        } else {
+          setError('Session not established. Please try again.')
+          setLoading(false)
+        }
       } else {
-        setError('Session not established. Please try again.')
+        setError('Login failed. Please try again.')
         setLoading(false)
       }
-    } else {
-      setError('Login failed. Please try again.')
+    } catch (err) {
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Sign in error:', err)
+      }
+      
+      // Handle network errors (e.g., from browser extensions interfering)
+      const errorMessage = err instanceof Error 
+        ? err.message 
+        : 'Network error. Please check your connection or disable browser extensions that might be blocking requests.'
+      
+      // Check if it's a fetch error
+      if (errorMessage.includes('fetch') || errorMessage.includes('Failed to fetch')) {
+        setError(
+          'Connection failed. This is likely caused by a browser extension blocking network requests. ' +
+          'Please try:\n' +
+          '1. Open an Incognito window (Ctrl+Shift+N)\n' +
+          '2. Or disable browser extensions temporarily\n' +
+          '3. Check the Network tab in DevTools for blocked requests'
+        )
+      } else {
+        setError(errorMessage)
+      }
       setLoading(false)
     }
   }
@@ -46,20 +93,33 @@ export default function LoginPage() {
     setLoading(true)
     setError(null)
 
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: `${window.location.origin}/dashboard`,
-      },
-    })
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/dashboard`,
+        },
+      })
 
-    if (error) {
-      setError(error.message)
-    } else {
-      setError('Check your email to confirm your account')
+      if (error) {
+        setError(error.message)
+      } else {
+        setError('Check your email to confirm your account')
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error 
+        ? err.message 
+        : 'Network error. Please check your connection or disable browser extensions that might be blocking requests.'
+      
+      if (errorMessage.includes('fetch') || errorMessage.includes('Failed to fetch')) {
+        setError('Connection failed. This might be caused by a browser extension. Try disabling extensions or use an incognito window.')
+      } else {
+        setError(errorMessage)
+      }
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   return (

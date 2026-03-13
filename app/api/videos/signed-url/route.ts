@@ -36,7 +36,8 @@ export async function GET(request: NextRequest) {
       .maybeSingle()
 
     if (step && !stepError) {
-      const sop = step.sops as { owner: string; published: boolean } | null
+      const sopsData = step.sops
+      const sop = (Array.isArray(sopsData) ? sopsData[0] : sopsData) as { owner: string; published: boolean } | null | undefined
       if (sop) {
         // Check if user is owner or SOP is published
         if (sop.owner !== user.id && !sop.published) {
@@ -57,7 +58,6 @@ export async function GET(request: NextRequest) {
       if (process.env.NODE_ENV === 'development') {
         console.error('Error creating signed URL:', {
           error: error.message,
-          code: error.statusCode,
           path: filePath,
           originalPath: path,
         })

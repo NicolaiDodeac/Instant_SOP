@@ -125,7 +125,7 @@ export default function EditorPage() {
 
         if (annsData) {
           const annsMap: Record<string, StepAnnotation[]> = {}
-          annsData.forEach((ann) => {
+          annsData.forEach((ann: StepAnnotation) => {
             if (!annsMap[ann.step_id]) {
               annsMap[ann.step_id] = []
             }

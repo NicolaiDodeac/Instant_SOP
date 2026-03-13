@@ -15,8 +15,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
+  maximumScale: 5,
   viewportFit: 'cover',
   themeColor: '#000000',
 }
@@ -29,6 +28,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <meta name="theme-color" content="#000000" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="format-detection" content="telephone=no" />
         <link rel="icon" href="/favicon-32x32.png" />
         <link rel="apple-touch-icon" href="/ios/apple-touch-icon-180x180.png" />
         {/* <script

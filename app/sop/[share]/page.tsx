@@ -111,22 +111,24 @@ export default function PublicViewerPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div>Loading...</div>
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom bg-gray-50 dark:bg-gray-900">
+        <p className="text-gray-600 dark:text-gray-400">Loading...</p>
       </div>
     )
   }
 
   if (!sop || steps.length === 0) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div>SOP not found</div>
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom p-4 bg-gray-50 dark:bg-gray-900">
+        <p className="text-center text-gray-600 dark:text-gray-400">
+          This SOP doesn&apos;t exist or has no steps.
+        </p>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
       {/* Header */}
       <div className="sticky top-0 z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
         <div className="p-4">
@@ -153,8 +155,8 @@ export default function PublicViewerPage() {
         ))}
       </div>
 
-      {/* Install prompt */}
-      <div className="p-4 text-center text-sm text-gray-600 dark:text-gray-400">
+      {/* Install prompt (Android: Add to Home screen / Install app) */}
+      <div className="p-4 pb-8 text-center text-sm text-gray-600 dark:text-gray-400 safe-bottom">
         <p>Add to Home Screen for offline access</p>
       </div>
     </div>

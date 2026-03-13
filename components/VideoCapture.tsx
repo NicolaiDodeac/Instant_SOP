@@ -37,7 +37,17 @@ export default function VideoCapture({
   }, [])
 
   const startRecording = async () => {
+    setError(null)
     try {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+        const secure = typeof window !== 'undefined' && window.isSecureContext
+        setError(
+          secure
+            ? 'Camera not available in this browser.'
+            : 'Recording needs HTTPS. On your phone, open the app via an https:// link (e.g. use a tunnel like ngrok, or deploy the app) so the camera can be used.'
+        )
+        return
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
         audio: true,

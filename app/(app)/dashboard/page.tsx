@@ -13,6 +13,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [newTitle, setNewTitle] = useState('')
   const [showCreate, setShowCreate] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
   const router = useRouter()
   const supabase = useSupabaseClient()
 
@@ -25,7 +27,10 @@ export default function DashboardPage() {
     const {
       data: { user },
     } = await supabase.auth.getUser()
-    if (!user) return
+    if (!user) {
+      setLoading(false)
+      return
+    }
 
     const { data, error } = await supabase
       .from('sops')
@@ -52,6 +57,9 @@ export default function DashboardPage() {
     } = await supabase.auth.getUser()
     if (!user) return
 
+    setCreating(true)
+    setCreateError(null)
+
     const { data, error } = await supabase
       .from('sops')
       .insert({
@@ -61,11 +69,17 @@ export default function DashboardPage() {
       .select()
       .single()
 
-    if (!error && data) {
+    setCreating(false)
+    if (error) {
+      setCreateError(error.message || 'Failed to create SOP. Please try again.')
+      return
+    }
+    if (data) {
+      setShowCreate(false)
+      setNewTitle('')
+      setCreateError(null)
       router.push(`/editor/${data.id}`)
     }
-    setShowCreate(false)
-    setNewTitle('')
   }
 
   async function handleSignOut() {
@@ -75,13 +89,13 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen safe-top safe-bottom safe-left safe-right">
+    <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right pb-20 md:pb-4 safe-bottom">
       <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
         <div className="flex items-center justify-between p-4">
-          <h1 className="text-2xl font-bold">My SOPs</h1>
+          <h1 className="text-xl md:text-2xl font-bold truncate">My SOPs</h1>
           <button
             onClick={handleSignOut}
-            className="text-sm text-gray-600 dark:text-gray-400 touch-target px-3"
+            className="text-sm text-gray-600 dark:text-gray-400 touch-target px-3 min-w-[48px]"
           >
             Sign Out
           </button>
@@ -121,7 +135,7 @@ export default function DashboardPage() {
             <h2 className="text-lg font-semibold">Published SOPs</h2>
             <button
               onClick={() => setShowCreate(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg touch-target font-semibold"
+              className="hidden md:inline-flex bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg touch-target font-semibold"
             >
               + New SOP
             </button>
@@ -132,22 +146,30 @@ export default function DashboardPage() {
               <input
                 type="text"
                 value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
+                onChange={(e) => {
+                  setNewTitle(e.target.value)
+                  setCreateError(null)
+                }}
                 placeholder="SOP Title"
-                className="w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target mb-2"
+                className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target text-base mb-2"
                 autoFocus
               />
+              {createError && (
+                <p className="text-sm text-red-600 dark:text-red-400 mb-2">{createError}</p>
+              )}
               <div className="flex gap-2">
                 <button
                   onClick={handleCreateSOP}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg touch-target"
+                  disabled={creating || !newTitle.trim()}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg touch-target disabled:opacity-50"
                 >
-                  Create
+                  {creating ? 'Creating...' : 'Create'}
                 </button>
                 <button
                   onClick={() => {
                     setShowCreate(false)
                     setNewTitle('')
+                    setCreateError(null)
                   }}
                   className="flex-1 bg-gray-300 dark:bg-gray-700 text-black dark:text-white px-4 py-2 rounded-lg touch-target"
                 >
@@ -190,6 +212,21 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Android: FAB for New SOP (thumb-friendly, always visible on mobile) */}
+      <div
+        className="fixed bottom-6 right-4 z-20 md:hidden"
+        style={{ bottom: 'max(1.5rem, calc(env(safe-area-inset-bottom) + 0.5rem))' }}
+      >
+        <button
+          type="button"
+          onClick={() => setShowCreate(true)}
+          className="w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-lg flex items-center justify-center no-select touch-target text-2xl leading-none"
+          aria-label="Create new SOP"
+        >
+          +
+        </button>
       </div>
     </div>
   )

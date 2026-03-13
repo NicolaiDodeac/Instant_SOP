@@ -1,89 +1,45 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { useSupabaseClient } from '@/lib/supabase/client'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const router = useRouter()
-  const supabase = useSupabaseClient()
+  const [success, setSuccess] = useState<string | null>(null)
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setError(null)
+    setSuccess(null)
 
     try {
-      // Check if Supabase URL is accessible
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-      if (!supabaseUrl) {
-        setError('Supabase configuration is missing. Please check your environment variables.')
+      const res = await fetch('/api/auth/signin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error || 'Login failed. Please try again.')
         setLoading(false)
         return
       }
 
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
-
-      if (error) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('Supabase auth error:', error)
-        }
-        
-        // More user-friendly error messages
-        let errorMessage = error.message
-        if (error.message === 'Invalid login credentials') {
-          errorMessage = 'Invalid email or password. Please check your credentials and try again.'
-        } else if (error.message.includes('Email not confirmed')) {
-          errorMessage = 'Please check your email and confirm your account before signing in.'
-        } else if (error.message.includes('Too many requests')) {
-          errorMessage = 'Too many login attempts. Please wait a moment and try again.'
-        }
-        
-        setError(errorMessage)
-        setLoading(false)
-      } else if (data.user) {
-        // Wait for session to be established and cookies to be set
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session) {
-          // Use window.location for a hard redirect to ensure cookies are sent to middleware
-          window.location.href = '/dashboard'
-        } else {
-          setError('Session not established. Please try again.')
-          setLoading(false)
-        }
-      } else {
-        setError('Login failed. Please try again.')
-        setLoading(false)
-      }
+      // Server sets auth cookies; hard redirect so middleware sees them
+      window.location.href = '/dashboard'
     } catch (err) {
       if (process.env.NODE_ENV === 'development') {
         console.error('Sign in error:', err)
       }
-      
-      // Handle network errors (e.g., from browser extensions interfering)
-      const errorMessage = err instanceof Error 
-        ? err.message 
-        : 'Network error. Please check your connection or disable browser extensions that might be blocking requests.'
-      
-      // Check if it's a fetch error
-      if (errorMessage.includes('fetch') || errorMessage.includes('Failed to fetch')) {
-        setError(
-          'Connection failed. This is likely caused by a browser extension blocking network requests. ' +
-          'Please try:\n' +
-          '1. Open an Incognito window (Ctrl+Shift+N)\n' +
-          '2. Or disable browser extensions temporarily\n' +
-          '3. Check the Network tab in DevTools for blocked requests'
-        )
-      } else {
-        setError(errorMessage)
-      }
+      const errorMessage = err instanceof Error
+        ? err.message
+        : 'Network error. Please check your connection and try again.'
+      setError(errorMessage)
       setLoading(false)
     }
   }
@@ -92,20 +48,21 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
     setError(null)
+    setSuccess(null)
 
     try {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: `${window.location.origin}/dashboard`,
-        },
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
       })
 
-      if (error) {
-        setError(error.message)
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error || 'Sign up failed. Please try again.')
       } else {
-        setError('Check your email to confirm your account')
+        setSuccess(data.message || 'Check your email to confirm your account')
       }
     } catch (err) {
       const errorMessage = err instanceof Error 
@@ -134,10 +91,12 @@ export default function LoginPage() {
             <input
               id="email"
               type="email"
+              inputMode="email"
+              autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target"
+              className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target text-base"
               placeholder="your@email.com"
             />
           </div>
@@ -148,17 +107,23 @@ export default function LoginPage() {
             <input
               id="password"
               type="password"
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={6}
-              className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target"
+              className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target text-base"
               placeholder="••••••"
             />
           </div>
           {error && (
-            <div className="p-3 rounded-lg bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 text-sm">
+            <div className="p-3 rounded-lg bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 text-sm whitespace-pre-line">
               {error}
+            </div>
+          )}
+          {success && (
+            <div className="p-3 rounded-lg bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200 text-sm">
+              {success}
             </div>
           )}
           <button
@@ -181,3 +146,4 @@ export default function LoginPage() {
     </div>
   )
 }
+

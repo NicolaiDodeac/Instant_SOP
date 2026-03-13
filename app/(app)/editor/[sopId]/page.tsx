@@ -497,18 +497,23 @@ export default function EditorPage() {
       
       if (isSavedToDb) {
         // Annotation exists in DB - update it
-        // Filter out fields that shouldn't be updated (id, step_id)
-        const { id: _, step_id: __, ...dbUpdates } = updates as any
-
-        // Only include fields that actually changed and are valid
-        const cleanUpdates: any = {}
-        if ('x' in updates) cleanUpdates.x = updates.x
-        if ('y' in updates) cleanUpdates.y = updates.y
+        // Build payload with valid types; DB has x,y in [0,1], times as int
+        const cleanUpdates: Record<string, unknown> = {}
+        if ('x' in updates && typeof updates.x === 'number') {
+          cleanUpdates.x = Math.max(0, Math.min(1, updates.x))
+        }
+        if ('y' in updates && typeof updates.y === 'number') {
+          cleanUpdates.y = Math.max(0, Math.min(1, updates.y))
+        }
         if ('angle' in updates) cleanUpdates.angle = updates.angle ?? null
         if ('text' in updates) cleanUpdates.text = updates.text ?? null
-        if ('style' in updates) cleanUpdates.style = updates.style || null
-        if ('t_start_ms' in updates) cleanUpdates.t_start_ms = updates.t_start_ms
-        if ('t_end_ms' in updates) cleanUpdates.t_end_ms = updates.t_end_ms
+        if ('style' in updates) cleanUpdates.style = updates.style ?? null
+        if ('t_start_ms' in updates && typeof updates.t_start_ms === 'number') {
+          cleanUpdates.t_start_ms = Math.round(updates.t_start_ms)
+        }
+        if ('t_end_ms' in updates && typeof updates.t_end_ms === 'number') {
+          cleanUpdates.t_end_ms = Math.round(updates.t_end_ms)
+        }
 
         // Only update if there are actual changes
         if (Object.keys(cleanUpdates).length === 0) {
@@ -525,15 +530,16 @@ export default function EditorPage() {
 
         if (error) {
           if (process.env.NODE_ENV === 'development') {
-            console.error('Error updating annotation:', {
-              error: error,
-              errorMessage: error.message,
-              errorDetails: error.details,
-              errorHint: error.hint,
-              errorCode: error.code,
+            console.error(
+              'Error updating annotation:',
+              error.message,
+              '| code:',
+              error.code,
+              '| id:',
               id,
-              cleanUpdates,
-            })
+              '| updates:',
+              cleanUpdates
+            )
           }
         } else if (process.env.NODE_ENV === 'development') {
           console.log('Annotation updated successfully:', { id, cleanUpdates })
@@ -607,28 +613,34 @@ export default function EditorPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div>Loading...</div>
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom bg-gray-50 dark:bg-gray-900">
+        <p className="text-gray-600 dark:text-gray-400">Loading...</p>
       </div>
     )
   }
 
   if (!sop) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div>SOP not found</div>
+      <div className="min-h-screen flex flex-col items-center justify-center safe-top safe-bottom p-4 bg-gray-50 dark:bg-gray-900">
+        <p className="text-gray-600 dark:text-gray-400 mb-4">SOP not found</p>
+        <button
+          onClick={() => router.push('/dashboard')}
+          className="text-blue-600 dark:text-blue-400 touch-target font-medium"
+        >
+          Back to dashboard
+        </button>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
       {/* Sticky header */}
       <div className="sticky top-0 z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
         <div className="flex items-center justify-between p-4">
           <button
             onClick={() => router.push('/dashboard')}
-            className="text-blue-600 dark:text-blue-400 touch-target px-2"
+            className="text-blue-600 dark:text-blue-400 touch-target px-2 min-w-[48px]"
           >
             ← Back
           </button>
@@ -643,7 +655,7 @@ export default function EditorPage() {
             )}
             <button
               onClick={handlePublish}
-              className={`px-3 py-1 rounded touch-target text-sm ${
+              className={`px-3 py-2 rounded-lg touch-target text-sm min-w-[48px] ${
                 sop.published
                   ? 'bg-green-600 text-white'
                   : 'bg-gray-300 dark:bg-gray-700'
@@ -655,8 +667,8 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {/* Step chips */}
-      <div className="p-4 overflow-x-auto">
+      {/* Step chips: smooth horizontal scroll on Android */}
+      <div className="p-4 overflow-x-auto scroll-touch safe-left safe-right">
         <div className="flex gap-2">
           {steps.map((step) => (
             <button
@@ -763,7 +775,7 @@ export default function EditorPage() {
                     ? `${window.location.origin}/sop/${sop.share_slug}`
                     : ''
                 )}`}
-                alt="QR Code"
+                alt="QR code to share this SOP"
                 className="w-48 h-48 mx-auto"
               />
             </div>

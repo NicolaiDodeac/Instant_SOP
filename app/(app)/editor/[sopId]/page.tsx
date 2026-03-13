@@ -117,7 +117,7 @@ export default function EditorPage() {
 
       // Load annotations
       if (stepsData && stepsData.length > 0) {
-        const stepIds = stepsData.map((s) => s.id)
+        const stepIds = stepsData.map((s: SOPStep) => s.id)
         const { data: annsData } = await supabase
           .from('step_annotations')
           .select('*')

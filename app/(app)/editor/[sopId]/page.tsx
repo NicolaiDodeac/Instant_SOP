@@ -449,12 +449,14 @@ export default function EditorPage() {
         // Use stepId variable to ensure we update the correct step's annotations
         setAnnotations(prev => {
           const stepAnnotations = prev[stepId] || []
-          const updatedAnnsWithDbId = stepAnnotations.map(ann => 
+          const updatedAnnsWithDbId = stepAnnotations.map(ann =>
             ann.id === newAnn.id ? annotationWithDbId : ann
           )
           return { ...prev, [stepId]: updatedAnnsWithDbId }
         })
-        
+        // Keep the new annotation selected; its id changed from nanoid to UUID
+        setSelectedAnnotationId(prev => (prev === newAnn.id ? data.id : prev))
+
         if (process.env.NODE_ENV === 'development') {
           console.log('Annotation saved to DB, updated local ID:', { 
             oldId: newAnn.id, 
@@ -747,7 +749,7 @@ export default function EditorPage() {
                 onSeek={setCurrentTime}
                 dragMode={timelineDragMode}
                 onDragModeChange={setTimelineDragMode}
-                disabled={false}
+                disabled={!selectedAnnotationId}
                 selectionHint={
                   selectedAnnotationId
                     ? (() => {

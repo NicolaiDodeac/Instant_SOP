@@ -69,22 +69,38 @@ export default function StepPlayer({
   const isSeekingRef = useRef(false)
 
   // Update dimensions when container is laid out or resized (ResizeObserver catches initial layout)
+  const updateDimensions = useCallback(() => {
+    const el = containerRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    if (rect.width > 0 && rect.height > 0) {
+      setDimensions({ width: rect.width, height: rect.height })
+    }
+  }, [])
+
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-
-    const updateDimensions = () => {
-      const rect = el.getBoundingClientRect()
-      if (rect.width > 0 && rect.height > 0) {
-        setDimensions({ width: rect.width, height: rect.height })
-      }
-    }
-
     updateDimensions()
     const observer = new ResizeObserver(updateDimensions)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [])
+  }, [updateDimensions])
+
+  // When video loads (e.g. coming back to SOP), re-measure after layout so annotations show
+  useEffect(() => {
+    if (!videoUrl) return
+    let rafId = 0
+    let timeoutId = 0
+    rafId = requestAnimationFrame(() => {
+      updateDimensions()
+      timeoutId = window.setTimeout(updateDimensions, 100)
+    })
+    return () => {
+      cancelAnimationFrame(rafId)
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }, [videoUrl, updateDimensions])
 
   // Sync video time and play state
   useEffect(() => {

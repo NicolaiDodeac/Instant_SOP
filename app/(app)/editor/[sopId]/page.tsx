@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
-import { saveDraft, getDraft, getVideoBlob, markVideoUploaded } from '@/lib/idb'
+import { saveDraft, getDraft, getVideoBlob, markVideoUploaded, deleteVideoBlob } from '@/lib/idb'
 import { nanoid } from 'nanoid'
 import VideoCapture from '@/components/VideoCapture'
 
@@ -364,6 +364,48 @@ export default function EditorPage() {
     }
   }
 
+  async function handleDeleteStep(stepId: string, e?: React.MouseEvent) {
+    e?.stopPropagation()
+    if (steps.length <= 1) return
+    if (isOffline) {
+      const draft = await getDraft(sopId)
+      if (draft) {
+        draft.steps = draft.steps.filter((s) => s.id !== stepId)
+        await saveDraft(draft)
+      }
+      setSteps((prev) => prev.filter((s) => s.id !== stepId))
+      setAnnotations((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
+      if (currentStepId === stepId) {
+        const remaining = steps.filter((s) => s.id !== stepId)
+        setCurrentStepId(remaining[0]?.id ?? null)
+        setVideoUrl(null)
+      }
+      await deleteVideoBlob(stepId)
+      return
+    }
+    const { error } = await supabase.from('sop_steps').delete().eq('id', stepId)
+    if (error) {
+      console.error('Error deleting step:', error)
+      return
+    }
+    setSteps((prev) => prev.filter((s) => s.id !== stepId))
+    setAnnotations((prev) => {
+      const next = { ...prev }
+      delete next[stepId]
+      return next
+    })
+    if (currentStepId === stepId) {
+      const remaining = steps.filter((s) => s.id !== stepId)
+      setCurrentStepId(remaining[0]?.id ?? null)
+      setVideoUrl(null)
+    }
+    await deleteVideoBlob(stepId)
+  }
+
   async function handleAddAnnotation(kind: 'arrow' | 'label') {
     // Get the current step ID directly from state to avoid closure issues
     const stepId = currentStepId
@@ -701,27 +743,39 @@ export default function EditorPage() {
 
       {/* Step chips: wrap to next line when no space */}
       <div className="px-2 py-1.5 safe-left safe-right">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
           {steps.map((step, i) => (
             <button
               key={step.id}
+              type="button"
               onClick={() => setCurrentStepId(step.id)}
               className={`px-3 py-1.5 rounded-lg touch-target whitespace-nowrap text-sm ${
                 currentStepId === step.id
                   ? 'bg-blue-600 text-white'
-                  : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700'
+                  : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-gray-100'
               }`}
             >
               {i + 1}
             </button>
           ))}
           <button
+            type="button"
             onClick={handleAddStep}
             className="px-3 py-1.5 rounded-lg bg-gray-200 dark:bg-gray-700 touch-target whitespace-nowrap text-sm"
           >
             <span className="md:hidden">Add</span>
             <span className="hidden md:inline">+ Add Step</span>
           </button>
+          {steps.length > 1 && currentStepId && (
+            <button
+              type="button"
+              onClick={() => handleDeleteStep(currentStepId)}
+              className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white touch-target"
+              aria-label="Delete current step"
+            >
+              🗑️
+            </button>
+          )}
         </div>
       </div>
 

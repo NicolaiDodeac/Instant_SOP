@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
@@ -35,6 +35,7 @@ export default function EditorPage() {
   const [timelineDragMode, setTimelineDragMode] = useState<TimelineDragMode>('seek')
   const [loading, setLoading] = useState(true)
   const [isOffline, setIsOffline] = useState(false)
+  const stepInstructionsRef = useRef<string>('')
 
   // Check online status
   useEffect(() => {
@@ -180,6 +181,14 @@ export default function EditorPage() {
     }
   }, [selectedAnnotationId, annotations, currentStepId])
 
+  // Keep instructions ref in sync when switching steps
+  useEffect(() => {
+    if (currentStepId) {
+      const step = steps.find((s) => s.id === currentStepId)
+      stepInstructionsRef.current = step?.instructions ?? ''
+    }
+  }, [currentStepId, steps])
+
   // Save draft when annotations (or other draft data) change, so we always persist latest state
   useEffect(() => {
     if (!sop) return
@@ -303,6 +312,22 @@ export default function EditorPage() {
       console.error('Error uploading video:', err)
       // Will retry later when online
     }
+  }
+
+  function handleStepInstructionsChange(stepId: string, instructions: string) {
+    stepInstructionsRef.current = instructions
+    setSteps((prev) =>
+      prev.map((s) => (s.id === stepId ? { ...s, instructions } : s))
+    )
+  }
+
+  async function handleStepInstructionsBlur(stepId: string) {
+    const value = stepInstructionsRef.current
+    if (isOffline) return
+    await supabase
+      .from('sop_steps')
+      .update({ instructions: value || null })
+      .eq('id', stepId)
   }
 
   async function handleAddStep() {
@@ -703,6 +728,23 @@ export default function EditorPage() {
       {currentStep && (
         <div className="p-4 space-y-4">
           <h2 className="text-xl font-semibold">{currentStep.title}</h2>
+
+          {/* Step description - clear, visible, phone-friendly */}
+          <div className="space-y-1.5">
+            <label htmlFor="step-description" className="text-sm font-medium text-gray-700 dark:text-gray-300 block">
+              Step description
+            </label>
+            <textarea
+              id="step-description"
+              value={currentStep.instructions ?? ''}
+              onChange={(e) => handleStepInstructionsChange(currentStep.id, e.target.value)}
+              onBlur={() => handleStepInstructionsBlur(currentStep.id)}
+              placeholder="Describe what to do in this step…"
+              rows={3}
+              className="w-full min-h-[72px] px-4 py-3 text-base bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y"
+              autoComplete="off"
+            />
+          </div>
 
           {/* Video capture/player */}
           {!currentStep.video_path && !videoUrl ? (

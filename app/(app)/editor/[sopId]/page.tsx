@@ -667,27 +667,27 @@ export default function EditorPage() {
 
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
-      {/* Sticky header */}
-      <div className="sticky top-0 z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-        <div className="flex items-center justify-between p-4">
+      {/* Sticky header - thin */}
+      <div className="z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
+        <div className="flex items-center justify-between px-1 py-0.5 min-h-[36px]">
           <button
             onClick={() => router.push('/dashboard')}
-            className="text-blue-600 dark:text-blue-400 touch-target px-2 min-w-[48px]"
+            className="text-blue-600 dark:text-blue-400 touch-target px-1 py-0.5 min-w-[40px] text-xs"
           >
             ← Back
           </button>
-          <h1 className="flex-1 text-center font-semibold text-lg truncate">
+          <h1 className="flex-1 text-center font-semibold text-xs truncate px-0.5">
             {sop.title}
           </h1>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-0.5">
             {isOffline && (
-              <span className="text-xs bg-yellow-200 dark:bg-yellow-800 px-2 py-1 rounded">
+              <span className="text-[10px] bg-yellow-200 dark:bg-yellow-800 px-1 py-0.5 rounded">
                 Offline
               </span>
             )}
             <button
               onClick={handlePublish}
-              className={`px-3 py-2 rounded-lg touch-target text-sm min-w-[48px] ${
+              className={`px-1.5 py-1.5 rounded  text-xs min-w-[40px] ${
                 sop.published
                   ? 'bg-green-600 text-white'
                   : 'bg-gray-300 dark:bg-gray-700'
@@ -699,77 +699,76 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {/* Step chips: smooth horizontal scroll on Android */}
-      <div className="p-4 overflow-x-auto scroll-touch safe-left safe-right">
-        <div className="flex gap-2">
-          {steps.map((step) => (
+      {/* Step chips: wrap to next line when no space */}
+      <div className="px-2 py-1.5 safe-left safe-right">
+        <div className="flex flex-wrap gap-2">
+          {steps.map((step, i) => (
             <button
               key={step.id}
               onClick={() => setCurrentStepId(step.id)}
-              className={`px-4 py-2 rounded-lg touch-target whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg touch-target whitespace-nowrap text-sm ${
                 currentStepId === step.id
                   ? 'bg-blue-600 text-white'
                   : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700'
               }`}
             >
-              {step.title}
+              {i + 1}
             </button>
           ))}
           <button
             onClick={handleAddStep}
-            className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 touch-target whitespace-nowrap"
+            className="px-3 py-1.5 rounded-lg bg-gray-200 dark:bg-gray-700 touch-target whitespace-nowrap text-sm"
           >
-            + Add Step
+            <span className="md:hidden">Add</span>
+            <span className="hidden md:inline">+ Add Step</span>
           </button>
         </div>
       </div>
 
-      {/* Main editor */}
+      {/* Main editor: title + description at top, then video + timeline */}
       {currentStep && (
-        <div className="p-4 space-y-4">
-          <h2 className="text-xl font-semibold">{currentStep.title}</h2>
+        <div className="p-2 md:p-3 space-y-2 md:space-y-3">
+          <h2 className="text-base md:text-lg font-semibold truncate">{currentStep.title}</h2>
 
-          {/* Step description - clear, visible, phone-friendly */}
-          <div className="space-y-1.5">
-            <label htmlFor="step-description" className="text-sm font-medium text-gray-700 dark:text-gray-300 block">
-              Step description
-            </label>
-            <textarea
-              id="step-description"
-              value={currentStep.instructions ?? ''}
-              onChange={(e) => handleStepInstructionsChange(currentStep.id, e.target.value)}
-              onBlur={() => handleStepInstructionsBlur(currentStep.id)}
-              placeholder="Describe what to do in this step…"
-              rows={3}
-              className="w-full min-h-[72px] px-4 py-3 text-base bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y"
-              autoComplete="off"
-            />
-          </div>
+          <textarea
+            id="step-description"
+            value={currentStep.instructions ?? ''}
+            onChange={(e) => handleStepInstructionsChange(currentStep.id, e.target.value)}
+            onBlur={() => handleStepInstructionsBlur(currentStep.id)}
+            placeholder="Describe what to do in this step…"
+            rows={2}
+            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-base bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y"
+            autoComplete="off"
+          />
 
-          {/* Video capture/player */}
+          {/* Video + timeline */}
           {!currentStep.video_path && !videoUrl ? (
-            <VideoCapture
-              stepId={currentStep.id}
-              sopId={sopId}
-              onVideoCaptured={handleVideoCaptured}
-            />
-          ) : (
-            <>
-              <StepPlayer
-                videoUrl={videoUrl}
-                annotations={currentAnnotations}
-                currentTime={currentTime}
-                startTime={startTime}
-                endTime={endTime}
-                onAnnotationUpdate={handleAnnotationUpdate}
-                onAnnotationDelete={handleAnnotationDelete}
-                selectedAnnotationId={selectedAnnotationId}
-                onSelectAnnotation={setSelectedAnnotationId}
-                onTimeUpdate={setCurrentTime}
-                onDurationUpdate={setVideoDuration}
-                showControls={false}
-                seekTime={currentTime}
+            <div className="-mx-3 md:mx-0">
+              <VideoCapture
+                stepId={currentStep.id}
+                sopId={sopId}
+                onVideoCaptured={handleVideoCaptured}
               />
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <div className="-mx-3 md:mx-0 rounded-none md:rounded-lg overflow-hidden">
+                <StepPlayer
+                  videoUrl={videoUrl}
+                  annotations={currentAnnotations}
+                  currentTime={currentTime}
+                  startTime={startTime}
+                  endTime={endTime}
+                  onAnnotationUpdate={handleAnnotationUpdate}
+                  onAnnotationDelete={handleAnnotationDelete}
+                  selectedAnnotationId={selectedAnnotationId}
+                  onSelectAnnotation={setSelectedAnnotationId}
+                  onTimeUpdate={setCurrentTime}
+                  onDurationUpdate={setVideoDuration}
+                  showControls={false}
+                  seekTime={currentTime}
+                />
+              </div>
               <TimeBar
                 duration={videoDuration || currentStep.duration_ms || 0}
                 currentTime={currentTime}
@@ -802,6 +801,10 @@ export default function EditorPage() {
                     : undefined
                 }
               />
+            </div>
+          )}
+
+          {currentStep.video_path && videoUrl && (
               <AnnotToolbar
                 onAddArrow={() => handleAddAnnotation('arrow')}
                 onAddLabel={() => handleAddAnnotation('label')}
@@ -847,14 +850,13 @@ export default function EditorPage() {
                     : undefined
                 }
               />
-            </>
-          )}
+            )}
 
           {/* Share panel if published */}
           {sop.published && sop.share_slug && (
-            <div className="p-4 bg-white dark:bg-gray-800 rounded-lg">
-              <h3 className="font-semibold mb-2">Share this SOP</h3>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+            <div className="p-2 md:p-3 bg-white dark:bg-gray-800 rounded-lg">
+              <h3 className="font-semibold text-sm mb-1">Share this SOP</h3>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
                 {typeof window !== 'undefined' &&
                   `${window.location.origin}/sop/${sop.share_slug}`}
               </p>

@@ -44,14 +44,11 @@ export default function StepPlayer({
   filterAnnotationsByTime,
 }: StepPlayerProps) {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
-  const [scale, setScale] = useState(1)
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
   const [isPlaying, setIsPlaying] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   
-  // Drag state
   const dragStateRef = useRef<{
     isDragging: boolean
     annotationId: string | null
@@ -61,7 +58,6 @@ export default function StepPlayer({
     startAnnY: number
   } | null>(null)
   
-  // Rotate state
   const rotateStateRef = useRef<{
     isRotating: boolean
     annotationId: string | null
@@ -70,37 +66,24 @@ export default function StepPlayer({
     startY: number
   } | null>(null)
   
-  // Pan state (for zoom panning)
-  const panStateRef = useRef<{
-    isPanning: boolean
-    startX: number
-    startY: number
-    startOffsetX: number
-    startOffsetY: number
-  } | null>(null)
-  
-  // Pinch state
-  const pinchStateRef = useRef<{
-    distance: number
-    scale: number
-    centerX: number
-    centerY: number
-  } | null>(null)
-  
   const isSeekingRef = useRef(false)
 
-  // Update dimensions on mount and resize
+  // Update dimensions when container is laid out or resized (ResizeObserver catches initial layout)
   useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
     const updateDimensions = () => {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect()
+      const rect = el.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) {
         setDimensions({ width: rect.width, height: rect.height })
       }
     }
 
     updateDimensions()
-    window.addEventListener('resize', updateDimensions)
-    return () => window.removeEventListener('resize', updateDimensions)
+    const observer = new ResizeObserver(updateDimensions)
+    observer.observe(el)
+    return () => observer.disconnect()
   }, [])
 
   // Sync video time and play state
@@ -204,16 +187,11 @@ export default function StepPlayer({
   const normToPixel = (norm: number, dimension: number) => norm * dimension
   const pixelToNorm = (pixel: number, dimension: number) => pixel / dimension
 
-  // Get pointer position relative to SVG (accounting for transform)
   const getPointerPosition = (e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent): { x: number; y: number } | null => {
     if (!svgRef.current) return null
-    
-    const svg = svgRef.current
-    const rect = svg.getBoundingClientRect()
-    
+    const rect = svgRef.current.getBoundingClientRect()
     let clientX: number
     let clientY: number
-    
     if ('touches' in e && e.touches.length > 0) {
       clientX = e.touches[0].clientX
       clientY = e.touches[0].clientY
@@ -223,18 +201,10 @@ export default function StepPlayer({
     } else {
       return null
     }
-    
-    // Get position relative to SVG viewport
-    const svgX = clientX - rect.left
-    const svgY = clientY - rect.top
-    
-    // Account for SVG transform (scale and pan)
-    // The transform is applied via CSS: scale(scale) translate(panOffset.x/scale, panOffset.y/scale)
-    // So we need to reverse it
-    const x = (svgX - panOffset.x) / scale
-    const y = (svgY - panOffset.y) / scale
-    
-    return { x, y }
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+    }
   }
 
   // Handle annotation drag start
@@ -258,7 +228,7 @@ export default function StepPlayer({
     }
     
     onSelectAnnotation(annotationId)
-  }, [annotations, onSelectAnnotation, scale, panOffset, filterAnnotationsByTime])
+  }, [annotations, onSelectAnnotation, filterAnnotationsByTime])
 
   // Handle annotation drag move
   const handleAnnotationMouseMove = useCallback((e: MouseEvent | TouchEvent) => {
@@ -280,7 +250,7 @@ export default function StepPlayer({
       x: Math.max(0, Math.min(1, startAnnX + normDx)),
       y: Math.max(0, Math.min(1, startAnnY + normDy)),
     })
-  }, [dimensions, onAnnotationUpdate, scale, panOffset, filterAnnotationsByTime])
+  }, [dimensions, onAnnotationUpdate, filterAnnotationsByTime])
 
   // Handle annotation drag end
   const handleAnnotationMouseUp = useCallback(() => {
@@ -310,7 +280,7 @@ export default function StepPlayer({
       startX: pos.x,
       startY: pos.y,
     }
-  }, [annotations, dimensions, scale, panOffset, filterAnnotationsByTime])
+  }, [annotations, dimensions, filterAnnotationsByTime])
 
   // Handle rotate move
   const handleRotateMouseMove = useCallback((e: MouseEvent | TouchEvent) => {
@@ -329,38 +299,26 @@ export default function StepPlayer({
     const angle = Math.atan2(pos.y - centerY, pos.x - centerX) * (180 / Math.PI)
     
     onAnnotationUpdate(annotationId, { angle })
-  }, [annotations, dimensions, onAnnotationUpdate, scale, panOffset, filterAnnotationsByTime])
+  }, [annotations, dimensions, onAnnotationUpdate, filterAnnotationsByTime])
 
   // Handle rotate end
   const handleRotateMouseUp = useCallback(() => {
     rotateStateRef.current = null
   }, [])
 
-  // Global mouse/touch handlers for dragging
   useEffect(() => {
     const handleMove = (e: MouseEvent | TouchEvent) => {
-      if (dragStateRef.current?.isDragging) {
-        handleAnnotationMouseMove(e)
-      }
-      if (rotateStateRef.current?.isRotating) {
-        handleRotateMouseMove(e)
-      }
-      if (panStateRef.current?.isPanning) {
-        handlePanMove(e)
-      }
+      if (dragStateRef.current?.isDragging) handleAnnotationMouseMove(e)
+      if (rotateStateRef.current?.isRotating) handleRotateMouseMove(e)
     }
-
     const handleUp = () => {
       handleAnnotationMouseUp()
       handleRotateMouseUp()
-      handlePanEnd()
     }
-
     window.addEventListener('mousemove', handleMove)
     window.addEventListener('mouseup', handleUp)
     window.addEventListener('touchmove', handleMove, { passive: false })
     window.addEventListener('touchend', handleUp)
-
     return () => {
       window.removeEventListener('mousemove', handleMove)
       window.removeEventListener('mouseup', handleUp)
@@ -368,93 +326,6 @@ export default function StepPlayer({
       window.removeEventListener('touchend', handleUp)
     }
   }, [handleAnnotationMouseMove, handleAnnotationMouseUp, handleRotateMouseMove, handleRotateMouseUp])
-
-  // Pan handlers (for zoom panning)
-  const handlePanStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (filterAnnotationsByTime || dragStateRef.current || rotateStateRef.current) return // Disable pan in public viewer mode
-    
-    const pos = getPointerPosition(e)
-    if (!pos) return
-
-    panStateRef.current = {
-      isPanning: true,
-      startX: pos.x * scale,
-      startY: pos.y * scale,
-      startOffsetX: panOffset.x,
-      startOffsetY: panOffset.y,
-    }
-  }, [scale, panOffset, filterAnnotationsByTime])
-
-  const handlePanMove = useCallback((e: MouseEvent | TouchEvent) => {
-    if (!panStateRef.current?.isPanning) return
-
-    const pos = getPointerPosition(e)
-    if (!pos || !panStateRef.current) return
-
-    const { startX, startY, startOffsetX, startOffsetY } = panStateRef.current
-    
-    const dx = (pos.x * scale) - startX
-    const dy = (pos.y * scale) - startY
-    
-    setPanOffset({
-      x: startOffsetX + dx,
-      y: startOffsetY + dy,
-    })
-  }, [scale])
-
-  const handlePanEnd = useCallback(() => {
-    panStateRef.current = null
-  }, [])
-
-  // Pinch handlers
-  const handlePinchStart = useCallback((e: React.TouchEvent) => {
-    if (filterAnnotationsByTime) return // Disable pinch in public viewer mode
-    
-    if (e.touches.length === 2) {
-      const touch1 = e.touches[0]
-      const touch2 = e.touches[1]
-      const distance = Math.hypot(
-        touch2.clientX - touch1.clientX,
-        touch2.clientY - touch1.clientY
-      )
-      const centerX = (touch1.clientX + touch2.clientX) / 2
-      const centerY = (touch1.clientY + touch2.clientY) / 2
-      
-      if (svgRef.current) {
-        const rect = svgRef.current.getBoundingClientRect()
-        pinchStateRef.current = {
-          distance,
-          scale,
-          centerX: centerX - rect.left,
-          centerY: centerY - rect.top,
-        }
-      }
-    }
-  }, [scale, filterAnnotationsByTime])
-
-  const handlePinchMove = useCallback((e: React.TouchEvent) => {
-    if (e.touches.length === 2 && pinchStateRef.current) {
-      e.preventDefault()
-      const touch1 = e.touches[0]
-      const touch2 = e.touches[1]
-      const distance = Math.hypot(
-        touch2.clientX - touch1.clientX,
-        touch2.clientY - touch1.clientY
-      )
-      
-      const newScale = (distance / pinchStateRef.current.distance) * pinchStateRef.current.scale
-      setScale(Math.max(0.5, Math.min(3, newScale)))
-    }
-  }, [])
-
-  const handlePinchEnd = useCallback(() => {
-    pinchStateRef.current = null
-  }, [])
-
-  const handleDoubleTap = () => {
-    setScale(1)
-    setPanOffset({ x: 0, y: 0 })
-  }
 
   const togglePlayPause = () => {
     const video = videoRef.current
@@ -484,12 +355,11 @@ export default function StepPlayer({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
+      {/* Portrait aspect (9/16) so vertical video fills width with no black sides; larger area */}
       <div
         ref={containerRef}
-        className="relative w-full bg-black rounded-lg overflow-hidden"
-        style={{ aspectRatio: '16/9' }}
-        onDoubleClick={handleDoubleTap}
+        className="relative w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto bg-black overflow-hidden rounded-lg aspect-[9/16] max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]"
       >
         <video
           ref={videoRef}
@@ -520,8 +390,8 @@ export default function StepPlayer({
                 // Note: preventDefault in touch handlers requires non-passive listener
                 // But for a button click, we don't need to prevent default
               }}
-              className={`pointer-events-auto w-16 h-16 bg-white bg-opacity-80 rounded-full flex items-center justify-center shadow-lg transition-opacity hover:bg-opacity-100 touch-target ${
-                isPlaying ? 'opacity-0 hover:opacity-100' : 'opacity-100'
+              className={`pointer-events-auto w-14 h-14 md:w-16 md:h-16 bg-white bg-opacity-90 rounded-full flex items-center justify-center shadow-lg transition-opacity hover:bg-opacity-100 active:scale-95 touch-target ${
+                isPlaying ? 'opacity-0 hover:opacity-100 active:opacity-100' : 'opacity-100'
               }`}
               aria-label={isPlaying ? 'Pause' : 'Play'}
               type="button"
@@ -541,25 +411,10 @@ export default function StepPlayer({
         <svg
           ref={svgRef}
           className="absolute inset-0 w-full h-full pointer-events-auto"
-          width={dimensions.width}
-          height={dimensions.height}
-          viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
-          style={{
-            transform: `scale(${scale}) translate(${panOffset.x / scale}px, ${panOffset.y / scale}px)`,
-            transformOrigin: 'top left',
-            zIndex: 5,
-            pointerEvents: filterAnnotationsByTime ? 'none' : 'auto', // Disable all pointer events in viewer mode
-          }}
-          onMouseDown={handlePanStart}
-          onTouchStart={(e) => {
-            if (e.touches.length === 1) {
-              handlePanStart(e)
-            } else if (e.touches.length === 2) {
-              handlePinchStart(e)
-            }
-          }}
-          onTouchMove={handlePinchMove}
-          onTouchEnd={handlePinchEnd}
+          width={dimensions.width || 1}
+          height={dimensions.height || 1}
+          viewBox={`0 0 ${dimensions.width || 1} ${dimensions.height || 1}`}
+          style={{ zIndex: 5, pointerEvents: filterAnnotationsByTime ? 'none' : 'auto' }}
           onClick={(e) => {
             if (filterAnnotationsByTime) return // Disable interaction in public viewer mode
             // Click on empty space deselects
@@ -568,7 +423,7 @@ export default function StepPlayer({
             }
           }}
         >
-          {visibleAnnotations.map((ann) => {
+          {dimensions.width > 0 && dimensions.height > 0 && visibleAnnotations.map((ann) => {
             const x = normToPixel(ann.x, dimensions.width)
             const y = normToPixel(ann.y, dimensions.height)
             const isSelected = ann.id === selectedAnnotationId
@@ -707,40 +562,6 @@ export default function StepPlayer({
           })}
         </svg>
       </div>
-
-      {!filterAnnotationsByTime && ( // Only show zoom controls in editor mode
-        <div className="flex items-center justify-center gap-3 py-2">
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300 min-w-[80px] text-center">
-            {Math.round(scale * 100)}%
-          </span>
-          <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
-            <button
-              onClick={() => setScale(Math.max(0.5, scale - 0.25))}
-              className="w-10 h-10 flex items-center justify-center bg-white dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 active:bg-gray-300 dark:active:bg-gray-500 transition-colors touch-target shadow-sm"
-              aria-label="Zoom out"
-            >
-              <span className="text-lg font-semibold text-gray-700 dark:text-gray-300">−</span>
-            </button>
-            <button
-              onClick={() => {
-                setScale(1)
-                setPanOffset({ x: 0, y: 0 })
-              }}
-              className="px-4 h-10 flex items-center justify-center bg-white dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 active:bg-gray-300 dark:active:bg-gray-500 transition-colors touch-target shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300"
-              aria-label="Reset zoom"
-            >
-              Reset
-            </button>
-            <button
-              onClick={() => setScale(Math.min(3, scale + 0.25))}
-              className="w-10 h-10 flex items-center justify-center bg-white dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 active:bg-gray-300 dark:active:bg-gray-500 transition-colors touch-target shadow-sm"
-              aria-label="Zoom in"
-            >
-              <span className="text-lg font-semibold text-gray-700 dark:text-gray-300">+</span>
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

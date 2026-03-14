@@ -184,33 +184,33 @@ export default function TimeBar({
   }
 
   return (
-    <div className="w-full space-y-2">
-      <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400 px-1">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-green-500 rounded-full" />
-            <span className="text-xs font-medium">Start: {formatTime(startTime)}</span>
+    <div className="w-full space-y-1">
+      <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 px-0.5 gap-1">
+        <div className="flex items-center gap-2 md:gap-4 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <div className="w-2.5 h-2.5 md:w-3 md:h-3 bg-green-500 rounded-full shrink-0" />
+            <span className="text-xs font-medium truncate">Start: {formatTime(startTime)}</span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 bg-red-500 rounded-full" />
-            <span className="text-xs font-medium">End: {formatTime(endTime)}</span>
+          <div className="flex items-center gap-1.5">
+            <div className="w-2.5 h-2.5 md:w-3 md:h-3 bg-red-500 rounded-full shrink-0" />
+            <span className="text-xs font-medium truncate">End: {formatTime(endTime)}</span>
           </div>
         </div>
-        <div className="flex flex-col items-end">
-          <span className="font-semibold text-base">Now: {formatTime(currentTime)}</span>
+        <div className="flex flex-col items-end shrink-0">
+          <span className="font-semibold text-sm md:text-base tabular-nums">Now: {formatTime(currentTime)}</span>
           <span className="text-xs text-gray-500">Total: {formatTime(duration)}</span>
           {!disabled && dragMode !== 'seek' && (
-            <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
+            <span className="text-xs font-medium text-amber-600 dark:text-amber-400 hidden sm:inline">
               {dragMode === 'setStart' ? 'Moving arrow sets START' : 'Moving arrow sets END'}
             </span>
           )}
         </div>
       </div>
 
-      <div className="relative w-full bg-white dark:bg-gray-900 border-t border-b border-gray-300 dark:border-gray-700 py-2">
+      <div className="relative w-full bg-white dark:bg-gray-900 border-t border-b border-gray-300 dark:border-gray-700 py-1">
         <div
           ref={trackRef}
-          className="relative w-full h-20 select-none"
+          className="relative w-full h-14 md:h-16 select-none"
           onClick={handleTimelineClick}
           onTouchStart={handleTimelineTouch}
         >
@@ -331,11 +331,11 @@ export default function TimeBar({
       </div>
 
       {!disabled && (
-        <div className="flex gap-2">
+        <div className="flex gap-1.5">
           <button
             type="button"
             onClick={handleSetStart}
-            className={`flex-1 py-2 px-4 rounded-lg touch-target text-sm font-semibold transition-colors ${
+            className={`flex-1 py-1.5 px-3 rounded-lg touch-target text-sm font-semibold transition-colors ${
               dragMode === 'setStart'
                 ? 'ring-2 ring-green-400 ring-offset-2 bg-green-600 hover:bg-green-700 text-white'
                 : 'bg-green-600 hover:bg-green-700 text-white'
@@ -346,7 +346,7 @@ export default function TimeBar({
           <button
             type="button"
             onClick={handleSetEnd}
-            className={`flex-1 py-2 px-4 rounded-lg touch-target text-sm font-semibold transition-colors ${
+            className={`flex-1 py-1.5 px-3 rounded-lg touch-target text-sm font-semibold transition-colors ${
               dragMode === 'setEnd'
                 ? 'ring-2 ring-red-400 ring-offset-2 bg-red-600 hover:bg-red-700 text-white'
                 : 'bg-red-600 hover:bg-red-700 text-white'
@@ -358,7 +358,7 @@ export default function TimeBar({
       )}
 
       {duration > 0 && (
-        <div className="text-xs text-center text-gray-500 dark:text-gray-400">
+        <div className="text-xs text-center text-gray-500 dark:text-gray-400 mt-0.5">
           {disabled ? (
             <span className="text-amber-600 dark:text-amber-400">
               Select an annotation (arrow or label) to edit its timeline

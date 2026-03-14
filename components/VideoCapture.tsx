@@ -155,7 +155,7 @@ export default function VideoCapture({
         </div>
       ) : (
         <>
-          <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+          <div className="relative w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto bg-black rounded-lg overflow-hidden aspect-[9/16] max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]">
             <video
               ref={videoRef}
               className="w-full h-full object-contain"

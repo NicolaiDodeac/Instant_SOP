@@ -35,9 +35,9 @@ export default function AnnotToolbar({
   const labelFontSize = selectedAnnotationStyle?.fontSize ?? LABEL_FONT_SIZE.default
 
   return (
-    <div className="flex flex-col gap-2 p-2 bg-gray-100 dark:bg-gray-800 rounded-lg">
+    <div className="flex flex-col gap-1.5 p-1.5 bg-gray-100 dark:bg-gray-800 rounded-lg">
       {showLabelEditor && (
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           <label htmlFor="label-text-edit" className="text-sm font-medium text-gray-700 dark:text-gray-300 block">
             Label text
           </label>
@@ -47,14 +47,14 @@ export default function AnnotToolbar({
             onChange={(e) => onLabelTextChange(e.target.value)}
             placeholder="Type your label… (Enter = new line)"
             rows={3}
-            className="w-full min-h-12 px-4 py-3 text-base bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-green-500 focus:border-green-500 touch-target resize-y"
+            className="w-full min-h-10 px-3 py-2 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-green-500 focus:border-green-500 touch-target resize-y"
             autoComplete="off"
           />
         </div>
       )}
 
       {showSizeControl && (
-        <div className="space-y-2">
+        <div className="space-y-1">
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300 block">
             {selectedAnnotationKind === 'arrow' ? 'Arrow thickness' : 'Text size'}
           </span>
@@ -69,7 +69,7 @@ export default function AnnotToolbar({
                       key={preset}
                       type="button"
                       onClick={() => onStyleChange({ ...selectedAnnotationStyle, strokeWidth: v })}
-                      className={`flex-1 py-2.5 rounded-lg text-sm font-medium touch-target ${
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium touch-target ${
                         arrowThickness === v
                           ? 'bg-blue-600 text-white'
                           : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600'
@@ -105,7 +105,7 @@ export default function AnnotToolbar({
                       key={preset}
                       type="button"
                       onClick={() => onStyleChange({ ...selectedAnnotationStyle, fontSize: v })}
-                      className={`flex-1 py-2.5 rounded-lg text-sm font-medium touch-target ${
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium touch-target ${
                         labelFontSize === v
                           ? 'bg-green-600 text-white'
                           : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600'
@@ -133,17 +133,17 @@ export default function AnnotToolbar({
           )}
         </div>
       )}
-      <div className="flex gap-2">
+      <div className="flex gap-1.5">
         <button
           onClick={onAddArrow}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg touch-target flex items-center justify-center gap-2"
+          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-lg touch-target flex items-center justify-center gap-1.5 text-sm"
         >
           <span>➡️</span>
           <span>Arrow</span>
         </button>
         <button
           onClick={onAddLabel}
-          className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-lg touch-target flex items-center justify-center gap-2"
+          className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-3 rounded-lg touch-target flex items-center justify-center gap-1.5 text-sm"
         >
           <span>🏷️</span>
           <span>Label</span>
@@ -151,7 +151,7 @@ export default function AnnotToolbar({
         {hasSelection && (
           <button
             onClick={onDelete}
-            className="bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-lg touch-target"
+            className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-3 rounded-lg touch-target text-sm"
           >
             🗑️
           </button>

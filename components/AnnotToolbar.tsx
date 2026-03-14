@@ -15,7 +15,7 @@ interface AnnotToolbarProps {
 }
 
 const ARROW_THICKNESS = { min: 2, max: 20, default: 5, small: 3, medium: 5, large: 12 }
-const LABEL_FONT_SIZE = { min: 12, max: 48, default: 20, small: 14, medium: 20, large: 28 }
+const LABEL_FONT_SIZE = { min: 12, max: 48, default: 28, small: 14, medium: 28, large: 36 }
 
 export default function AnnotToolbar({
   onAddArrow,

@@ -440,12 +440,12 @@ export default function EditorPage() {
       t_end_ms: defaultEndTime,
       kind,
       x: 0.5,
-      y: 0.5,
+      y: kind === 'label' ? 0.22 : 0.5, // Labels start near top to avoid play button; arrows stay centered
       angle: kind === 'arrow' ? 0 : undefined,
       text: kind === 'label' ? 'Label' : undefined,
       style: kind === 'arrow' 
         ? { color: '#00ff00', strokeWidth: 5 } // Big green arrow
-        : { color: '#ffffff', fontSize: 20 }, // White label
+        : { color: '#ffffff', fontSize: 28 }, // White label, larger default
     }
 
     // Select the newly created annotation so user can immediately edit its times

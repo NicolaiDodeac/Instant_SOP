@@ -324,8 +324,15 @@ export default function StepPlayer({
 
   useEffect(() => {
     const handleMove = (e: MouseEvent | TouchEvent) => {
-      if (dragStateRef.current?.isDragging) handleAnnotationMouseMove(e)
-      if (rotateStateRef.current?.isRotating) handleRotateMouseMove(e)
+      const isTouch = 'touches' in e
+      if (dragStateRef.current?.isDragging) {
+        if (isTouch) e.preventDefault()
+        handleAnnotationMouseMove(e)
+      }
+      if (rotateStateRef.current?.isRotating) {
+        if (isTouch) e.preventDefault()
+        handleRotateMouseMove(e)
+      }
     }
     const handleUp = () => {
       handleAnnotationMouseUp()
@@ -462,6 +469,16 @@ export default function StepPlayer({
                   onTouchStart={(e) => handleAnnotationMouseDown(e, ann.id)}
                   style={{ cursor: 'move' }}
                 >
+                  {/* Invisible wide hit area for easier touch/drag */}
+                  <line
+                    x1={0}
+                    y1={0}
+                    x2={endX}
+                    y2={endY}
+                    stroke="transparent"
+                    strokeWidth={32}
+                    pointerEvents="stroke"
+                  />
                   {/* Arrow line */}
                   <line
                     x1={0}
@@ -529,7 +546,7 @@ export default function StepPlayer({
             } else {
               // Label (supports multi-line via \n)
               const color = isSelected ? '#ff0000' : ann.style?.color || '#ffffff'
-              const fontSize = ann.style?.fontSize || 20
+              const fontSize = ann.style?.fontSize || 28
               const rawText = ann.text || 'Label'
               const lines = rawText.split('\n')
               const lineHeight = fontSize * 1.2

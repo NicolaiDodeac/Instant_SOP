@@ -18,7 +18,10 @@ interface StepPlayerProps {
   showControls?: boolean
   seekTime?: number // External seek control
   autoPlay?: boolean // Auto-play when true
-  filterAnnotationsByTime?: boolean // Filter annotations by time range (defaults to showControls)
+  /** When true, only show annotations when currentTime is in their [t_start_ms, t_end_ms] (visibility only; does not disable editing). */
+  showAnnotationsOnlyInTimeRange?: boolean
+  /** Filter by time AND disable drag/rotate (viewer mode). Defaults to showControls when undefined. */
+  filterAnnotationsByTime?: boolean
 }
 
 export default function StepPlayer({
@@ -36,6 +39,7 @@ export default function StepPlayer({
   showControls = false,
   seekTime,
   autoPlay = false,
+  showAnnotationsOnlyInTimeRange,
   filterAnnotationsByTime,
 }: StepPlayerProps) {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
@@ -179,16 +183,19 @@ export default function StepPlayer({
     }
   }, [autoPlay, videoUrl])
 
-  // Filter annotations by time
-  // In edit mode (showControls=false), show all annotations so user can position them
-  // In view mode (showControls=true or filterAnnotationsByTime=true), only show annotations in their time range
-  const shouldFilterByTime = filterAnnotationsByTime !== undefined
-    ? filterAnnotationsByTime
-    : showControls
+  // Filter annotations by time for visibility
+  // showAnnotationsOnlyInTimeRange: editor can show only in-range (still allow editing when visible)
+  // filterAnnotationsByTime / showControls: viewer mode = filter + disable editing
+  const shouldFilterByTime =
+    showAnnotationsOnlyInTimeRange !== undefined
+      ? showAnnotationsOnlyInTimeRange
+      : (filterAnnotationsByTime !== undefined ? filterAnnotationsByTime : showControls)
 
   const visibleAnnotations = shouldFilterByTime
     ? annotations.filter(
-        (ann) => currentTime >= ann.t_start_ms && currentTime <= ann.t_end_ms
+        (ann) =>
+          (currentTime >= ann.t_start_ms && currentTime <= ann.t_end_ms) ||
+          (selectedAnnotationId !== null && ann.id === selectedAnnotationId)
       )
     : annotations // Show all annotations in edit mode
 

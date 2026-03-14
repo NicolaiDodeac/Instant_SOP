@@ -7,7 +7,12 @@ import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/ty
 import { saveDraft, getDraft, getVideoBlob, markVideoUploaded } from '@/lib/idb'
 import { nanoid } from 'nanoid'
 import VideoCapture from '@/components/VideoCapture'
-import TimeBar from '@/components/TimeBar'
+
+/** True if id is a DB-generated UUID (not a local nanoid). */
+function isAnnotationIdFromDb(id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+}
+import TimeBar, { type TimelineDragMode } from '@/components/TimeBar'
 import AnnotToolbar from '@/components/AnnotToolbar'
 import StepPlayer from '@/components/StepPlayer'
 
@@ -27,6 +32,7 @@ export default function EditorPage() {
   const [startTime, setStartTime] = useState(0)
   const [endTime, setEndTime] = useState(0)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
+  const [timelineDragMode, setTimelineDragMode] = useState<TimelineDragMode>('seek')
   const [loading, setLoading] = useState(true)
   const [isOffline, setIsOffline] = useState(false)
 
@@ -491,9 +497,7 @@ export default function EditorPage() {
 
     // Save to server
     if (!isOffline) {
-      // Check if annotation has been saved to database (UUID format) or is still local (nanoid)
-      // UUIDs have dashes, nanoids don't
-      const isSavedToDb = id.includes('-') && id.length > 20 // UUID format check
+      const isSavedToDb = isAnnotationIdFromDb(id)
       
       if (isSavedToDb) {
         // Annotation exists in DB - update it
@@ -563,8 +567,8 @@ export default function EditorPage() {
     const updatedAnns = currentAnnotations.filter((ann) => ann.id !== id)
     setAnnotations({ ...annotations, [currentStepId]: updatedAnns })
 
-    // Delete from server
-    if (!isOffline) {
+    // Delete from server only if annotation was ever saved (has UUID)
+    if (!isOffline && isAnnotationIdFromDb(id)) {
       await supabase.from('step_annotations').delete().eq('id', id)
     }
 
@@ -728,24 +732,30 @@ export default function EditorPage() {
                 endTime={endTime}
                 onStartTimeChange={(time) => {
                   if (selectedAnnotationId) {
-                    // Update the selected annotation's start time
                     handleAnnotationUpdate(selectedAnnotationId, { t_start_ms: time })
                   } else {
-                    // No annotation selected - just update local state (for new annotations)
                     setStartTime(time)
                   }
                 }}
                 onEndTimeChange={(time) => {
                   if (selectedAnnotationId) {
-                    // Update the selected annotation's end time
                     handleAnnotationUpdate(selectedAnnotationId, { t_end_ms: time })
                   } else {
-                    // No annotation selected - just update local state (for new annotations)
                     setEndTime(time)
                   }
                 }}
                 onSeek={setCurrentTime}
-                disabled={!selectedAnnotationId}
+                dragMode={timelineDragMode}
+                onDragModeChange={setTimelineDragMode}
+                disabled={false}
+                selectionHint={
+                  selectedAnnotationId
+                    ? (() => {
+                        const ann = (currentAnnotations || []).find((a) => a.id === selectedAnnotationId)
+                        return ann ? `Editing selected ${ann.kind}` : undefined
+                      })()
+                    : undefined
+                }
               />
               <AnnotToolbar
                 onAddArrow={() => handleAddAnnotation('arrow')}

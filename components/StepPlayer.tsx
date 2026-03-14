@@ -17,7 +17,8 @@ interface StepPlayerProps {
   onDurationUpdate?: (duration: number) => void // Callback when video duration is available
   showControls?: boolean
   seekTime?: number // External seek control
-  autoPlay?: boolean // Auto-play when true
+  autoPlay?: boolean
+ // Auto-play when true
   /** When true, only show annotations when currentTime is in their [t_start_ms, t_end_ms] (visibility only; does not disable editing). */
   showAnnotationsOnlyInTimeRange?: boolean
   /** Filter by time AND disable drag/rotate (viewer mode). Defaults to showControls when undefined. */
@@ -496,7 +497,7 @@ export default function StepPlayer({
           className="w-full h-full object-contain"
           playsInline
           controls={showControls}
-          muted={!showControls} // Mute in autoplay mode (required by browsers), unmuted when controls are shown
+          muted
           loop={false} // Don't loop - let video play through to show all annotations
         />
         {!showControls && (
@@ -655,10 +656,16 @@ export default function StepPlayer({
                 </g>
               )
             } else {
-              // Label
+              // Label (supports multi-line via \n)
               const color = isSelected ? '#ff0000' : ann.style?.color || '#ffffff'
               const fontSize = ann.style?.fontSize || 20
-              const text = ann.text || 'Label'
+              const rawText = ann.text || 'Label'
+              const lines = rawText.split('\n')
+              const lineHeight = fontSize * 1.2
+              const charWidth = fontSize * 0.55
+              const maxLineLen = Math.max(...lines.map((l) => l.length), 1)
+              const blockWidth = maxLineLen * charWidth
+              const blockHeight = lines.length * lineHeight + 12
 
               return (
                 <g
@@ -670,26 +677,29 @@ export default function StepPlayer({
                 >
                   {/* Text background */}
                   <rect
-                    x={-text.length * (fontSize * 0.3)}
-                    y={-fontSize / 2}
-                    width={text.length * (fontSize * 0.6)}
-                    height={fontSize + 16}
+                    x={-blockWidth / 2}
+                    y={-blockHeight / 2}
+                    width={blockWidth}
+                    height={blockHeight}
                     fill={isSelected ? 'rgba(255, 0, 0, 0.2)' : 'rgba(0, 0, 0, 0.5)'}
                     rx={4}
                   />
-                  {/* Text */}
+                  {/* Text (multi-line) */}
                   <text
                     x={0}
-                    y={0}
+                    y={-(lines.length - 1) * (lineHeight / 2)}
                     textAnchor="middle"
-                    dominantBaseline="middle"
                     fontSize={fontSize}
                     fill={color}
                     stroke={isSelected ? '#ff0000' : '#000000'}
                     strokeWidth={2}
                     paintOrder="stroke"
                   >
-                    {text}
+                    {lines.map((line, i) => (
+                      <tspan key={i} x={0} dy={i === 0 ? 0 : lineHeight}>
+                        {line || ' '}
+                      </tspan>
+                    ))}
                   </text>
                 </g>
               )

@@ -180,6 +180,12 @@ export default function EditorPage() {
     }
   }, [selectedAnnotationId, annotations, currentStepId])
 
+  // Save draft when annotations (or other draft data) change, so we always persist latest state
+  useEffect(() => {
+    if (!sop) return
+    saveDraftState()
+  }, [sop, steps, annotations])
+
   async function loadVideoUrl(videoPath: string) {
     try {
       const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(videoPath)}`)
@@ -392,14 +398,11 @@ export default function EditorPage() {
       })
     }
 
-    // Get current annotations for this specific step
-    const stepAnnotations = annotations[stepId] || []
-    const updatedAnns = [...stepAnnotations, newAnn]
-    setAnnotations({ ...annotations, [stepId]: updatedAnns })
-    
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Updated annotations:', updatedAnns)
-    }
+    // Get current annotations for this specific step (functional update to avoid races)
+    setAnnotations((prev) => {
+      const stepAnnotations = prev[stepId] || []
+      return { ...prev, [stepId]: [...stepAnnotations, newAnn] }
+    })
 
     // Save to server
     if (!isOffline) {
@@ -468,9 +471,6 @@ export default function EditorPage() {
         }
       }
     }
-
-    // Save draft
-    await saveDraftState()
   }
 
   async function handleAnnotationUpdate(
@@ -479,15 +479,20 @@ export default function EditorPage() {
   ) {
     if (!currentStepId) return
 
-    const updatedAnns = currentAnnotations.map((ann) =>
-      ann.id === id ? { ...ann, ...updates } : ann
-    )
-    setAnnotations({ ...annotations, [currentStepId]: updatedAnns })
+    setAnnotations((prev) => {
+      const stepAnns = prev[currentStepId] || []
+      const updatedAnns = stepAnns.map((ann) =>
+        ann.id === id ? { ...ann, ...updates } : ann
+      )
+      return { ...prev, [currentStepId]: updatedAnns }
+    })
 
     // If updating times of the selected annotation, sync TimeBar
     if (selectedAnnotationId === id && (updates.t_start_ms !== undefined || updates.t_end_ms !== undefined)) {
-      const updatedAnn = updatedAnns.find((ann) => ann.id === id)
-      if (updatedAnn) {
+      const stepAnns = annotations[currentStepId] || []
+      const ann = stepAnns.find((a) => a.id === id)
+      if (ann) {
+        const updatedAnn = { ...ann, ...updates }
         if (updates.t_start_ms !== undefined) {
           setStartTime(updatedAnn.t_start_ms)
         }
@@ -558,24 +563,20 @@ export default function EditorPage() {
         }
       }
     }
-
-    // Save draft
-    await saveDraftState()
   }
 
   async function handleAnnotationDelete(id: string) {
     if (!currentStepId) return
 
-    const updatedAnns = currentAnnotations.filter((ann) => ann.id !== id)
-    setAnnotations({ ...annotations, [currentStepId]: updatedAnns })
+    setAnnotations((prev) => {
+      const stepAnns = prev[currentStepId] || []
+      return { ...prev, [currentStepId]: stepAnns.filter((ann) => ann.id !== id) }
+    })
 
     // Delete from server only if annotation was ever saved (has UUID)
     if (!isOffline && isAnnotationIdFromDb(id)) {
       await supabase.from('step_annotations').delete().eq('id', id)
     }
-
-    // Save draft
-    await saveDraftState()
   }
 
   async function saveDraftState() {
@@ -769,6 +770,40 @@ export default function EditorPage() {
                   }
                 }}
                 hasSelection={!!selectedAnnotationId}
+                selectedLabelText={
+                  selectedAnnotationId
+                    ? (() => {
+                        const ann = currentAnnotations.find((a) => a.id === selectedAnnotationId)
+                        return ann?.kind === 'label' ? (ann.text ?? '') : undefined
+                      })()
+                    : undefined
+                }
+                onLabelTextChange={
+                  selectedAnnotationId
+                    ? (text) => handleAnnotationUpdate(selectedAnnotationId, { text })
+                    : undefined
+                }
+                selectedAnnotationKind={
+                  selectedAnnotationId
+                    ? currentAnnotations.find((a) => a.id === selectedAnnotationId)?.kind
+                    : undefined
+                }
+                selectedAnnotationStyle={
+                  selectedAnnotationId
+                    ? currentAnnotations.find((a) => a.id === selectedAnnotationId)?.style
+                    : undefined
+                }
+                onStyleChange={
+                  selectedAnnotationId
+                    ? (style) => {
+                        const ann = currentAnnotations.find((a) => a.id === selectedAnnotationId)
+                        if (ann)
+                          handleAnnotationUpdate(selectedAnnotationId, {
+                            style: { ...ann.style, ...style },
+                          })
+                      }
+                    : undefined
+                }
               />
             </>
           )}

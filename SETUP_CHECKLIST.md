@@ -101,9 +101,11 @@ Create a file named `.env.local` in the project root:
 NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+# Optional: your user UUID (from Supabase Auth → Users). Only this user can access Admin → Manage editors.
+SUPER_USER_ID=your-user-uuid-here
 ```
 
-**Replace the values** with what you copied from Supabase.
+**Replace the values** with what you copied from Supabase. For `SUPER_USER_ID`, use your own user UUID from **Authentication → Users** in Supabase. Only that user can open **Manage editors** (admin cabinet) to add or remove who can create SOPs. If you also want to create SOPs yourself, add your own email in that cabinet so you appear in the editors list.
 
 ⚠️ **IMPORTANT**: 
 - Never commit `.env.local` to git (it's already in `.gitignore`)

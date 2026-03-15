@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClientServer } from '@/lib/supabase/server'
 
+const ALLOWED_DOMAIN = 'magna.co.uk'
+
 /**
  * Server-side sign-in to avoid client "Failed to fetch" errors
  * (CORS, browser extensions, or network issues).
+ * Only @magna.co.uk accounts are allowed.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -16,9 +19,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const emailLower = String(email).toLowerCase()
+    if (!emailLower.endsWith(`@${ALLOWED_DOMAIN}`)) {
+      return NextResponse.json(
+        { error: `Only @${ALLOWED_DOMAIN} accounts can sign in.` },
+        { status: 403 }
+      )
+    }
+
     const supabase = await createClientServer()
     const { data, error } = await supabase.auth.signInWithPassword({
-      email,
+      email: emailLower,
       password,
     })
 

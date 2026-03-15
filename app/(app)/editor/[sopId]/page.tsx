@@ -34,8 +34,36 @@ export default function EditorPage() {
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
   const [timelineDragMode, setTimelineDragMode] = useState<TimelineDragMode>('seek')
   const [loading, setLoading] = useState(true)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [isEditor, setIsEditor] = useState<boolean | null>(null)
   const [isOffline, setIsOffline] = useState(false)
   const stepInstructionsRef = useRef<string>('')
+  const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
+
+  useEffect(() => {
+    void supabase.auth.getUser().then((res: { data?: { user?: { id: string } } }) => {
+      const user = res.data?.user
+      if (user) setCurrentUserId(user.id)
+    })
+  }, [supabase])
+
+  useEffect(() => {
+    fetch('/api/user/me')
+      .then((res) => res.json())
+      .then((data) => setIsEditor(data?.isEditor === true))
+      .catch(() => setIsEditor(false))
+  }, [])
+
+  // Non-editors must not use the editor: send to viewer or dashboard
+  useEffect(() => {
+    if (loading || isEditor === null || isEditor) return
+    if (!sop) return
+    if (sop.published && sop.share_slug) {
+      router.replace(`/sop/${sop.share_slug}`)
+    } else {
+      router.replace('/dashboard')
+    }
+  }, [loading, isEditor, sop, router])
 
   // Check online status
   useEffect(() => {
@@ -202,21 +230,28 @@ export default function EditorPage() {
         const { url } = await res.json()
         setVideoUrl(url)
       } else {
-        const errorData = await res.json().catch(() => ({ error: 'Unknown error' }))
-        
-        // If file not found in storage, try loading from IndexedDB
-        if (res.status === 500 && errorData.error === 'Object not found') {
+        const text = await res.text()
+        let errorMessage: string
+        try {
+          const errorData = JSON.parse(text) as { error?: string }
+          errorMessage = (errorData?.error ?? text) || `HTTP ${res.status}`
+        } catch {
+          errorMessage = text || `HTTP ${res.status} ${res.statusText}`
+        }
+
+        // If file not found in storage (404/500), try loading from IndexedDB (local draft)
+        const notFound = res.status === 404 || (res.status === 500 && (errorMessage === 'Object not found' || errorMessage.includes('not found')))
+        if (notFound) {
           if (process.env.NODE_ENV === 'development') {
             console.warn('Video not found in storage, trying IndexedDB:', videoPath)
           }
           loadLocalVideo()
+        } else if (res.status === 401 || res.status === 403) {
+          // No access (e.g. viewing draft as non-owner); try local draft
+          loadLocalVideo()
         } else {
           if (process.env.NODE_ENV === 'development') {
-            console.error('Error loading video URL:', {
-              status: res.status,
-              error: errorData.error,
-              path: videoPath,
-            })
+            console.error('Error loading video URL:', res.status, errorMessage, videoPath)
           }
         }
       }
@@ -709,6 +744,11 @@ export default function EditorPage() {
 
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
+      {!isOwner && (
+        <div className="z-10 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 px-2 py-1.5 text-center text-xs text-blue-800 dark:text-blue-200">
+          View only — only the owner can edit this SOP
+        </div>
+      )}
       {/* Sticky header - thin */}
       <div className="z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
         <div className="flex items-center justify-between px-1 py-0.5 min-h-[36px]">
@@ -727,16 +767,18 @@ export default function EditorPage() {
                 Offline
               </span>
             )}
-            <button
-              onClick={handlePublish}
-              className={`px-1.5 py-1.5 rounded  text-xs min-w-[40px] ${
-                sop.published
-                  ? 'bg-green-600 text-white'
-                  : 'bg-gray-300 dark:bg-gray-700'
-              }`}
-            >
-              {sop.published ? 'Published' : 'Publish'}
-            </button>
+            {isOwner && (
+              <button
+                onClick={handlePublish}
+                className={`px-1.5 py-1.5 rounded  text-xs min-w-[40px] ${
+                  sop.published
+                    ? 'bg-green-600 text-white'
+                    : 'bg-gray-300 dark:bg-gray-700'
+                }`}
+              >
+                {sop.published ? 'Published' : 'Publish'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -758,23 +800,27 @@ export default function EditorPage() {
               {i + 1}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={handleAddStep}
-            className="px-3 py-1.5 rounded-lg bg-gray-200 dark:bg-gray-700 touch-target whitespace-nowrap text-sm"
-          >
-            <span className="md:hidden">Add</span>
-            <span className="hidden md:inline">+ Add Step</span>
-          </button>
-          {steps.length > 1 && currentStepId && (
-            <button
-              type="button"
-              onClick={() => handleDeleteStep(currentStepId)}
-              className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white touch-target"
-              aria-label="Delete current step"
-            >
-              🗑️
-            </button>
+          {isOwner && (
+            <>
+              <button
+                type="button"
+                onClick={handleAddStep}
+                className="px-3 py-1.5 rounded-lg bg-gray-200 dark:bg-gray-700 touch-target whitespace-nowrap text-sm"
+              >
+                <span className="md:hidden">Add</span>
+                <span className="hidden md:inline">+ Add Step</span>
+              </button>
+              {steps.length > 1 && currentStepId && (
+                <button
+                  type="button"
+                  onClick={() => handleDeleteStep(currentStepId)}
+                  className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white touch-target"
+                  aria-label="Delete current step"
+                >
+                  🗑️
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -791,19 +837,26 @@ export default function EditorPage() {
             onBlur={() => handleStepInstructionsBlur(currentStep.id)}
             placeholder="Describe what to do in this step…"
             rows={2}
-            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-base bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y"
+            readOnly={!isOwner}
+            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-base bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y disabled:opacity-90 disabled:cursor-not-allowed"
             autoComplete="off"
           />
 
           {/* Video + timeline */}
           {!currentStep.video_path && !videoUrl ? (
-            <div className="-mx-3 md:mx-0">
-              <VideoCapture
-                stepId={currentStep.id}
-                sopId={sopId}
-                onVideoCaptured={handleVideoCaptured}
-              />
-            </div>
+            isOwner ? (
+              <div className="-mx-3 md:mx-0">
+                <VideoCapture
+                  stepId={currentStep.id}
+                  sopId={sopId}
+                  onVideoCaptured={handleVideoCaptured}
+                />
+              </div>
+            ) : (
+              <div className="w-full aspect-video bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center text-gray-500">
+                No video for this step
+              </div>
+            )
           ) : (
             <div className="space-y-1">
               <div className="-mx-3 md:mx-0 rounded-none md:rounded-lg overflow-hidden">
@@ -821,6 +874,7 @@ export default function EditorPage() {
                   onDurationUpdate={setVideoDuration}
                   showControls={false}
                   seekTime={currentTime}
+                  filterAnnotationsByTime={!isOwner}
                 />
               </div>
               <TimeBar
@@ -845,7 +899,7 @@ export default function EditorPage() {
                 onSeek={setCurrentTime}
                 dragMode={timelineDragMode}
                 onDragModeChange={setTimelineDragMode}
-                disabled={!selectedAnnotationId}
+                disabled={!isOwner || !selectedAnnotationId}
                 selectionHint={
                   selectedAnnotationId
                     ? (() => {
@@ -858,7 +912,7 @@ export default function EditorPage() {
             </div>
           )}
 
-          {currentStep.video_path && videoUrl && (
+          {currentStep.video_path && videoUrl && isOwner && (
               <AnnotToolbar
                 onAddArrow={() => handleAddAnnotation('arrow')}
                 onAddLabel={() => handleAddAnnotation('label')}

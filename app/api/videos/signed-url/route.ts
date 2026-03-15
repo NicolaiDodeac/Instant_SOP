@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClientServer } from '@/lib/supabase/server'
+import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 
 export async function GET(request: NextRequest) {
   try {
@@ -46,28 +46,41 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Create signed URL
-    // Path format: '{userId}/{filename}.mp4' (bucket name is already in .from())
+    // Use service role to create signed URL so any authenticated user who passed
+    // the access check above can get a URL. Storage RLS only allows reading when
+    // path folder = auth.uid(), which would block editors/viewers from owner's files.
     const filePath = path
-    
-    const { data, error } = await supabase.storage
+    const serviceSupabase = createServiceRoleClient()
+    let data: { signedUrl?: string } | null = null
+    let error: { message?: string } | null = null
+
+    const result = await serviceSupabase.storage
       .from('sop-videos')
-      .createSignedUrl(filePath, 3600) // 1 hour expiry
+      .createSignedUrl(filePath, 3600)
+    data = result.data
+    error = result.error
+
+    // Fallback: if not found at userId/filename, try filename at bucket root (legacy or different layout)
+    if (error && (error.message === 'Object not found' || error.message?.includes('not found'))) {
+      const filenameOnly = path.includes('/') ? path.split('/').pop()! : path
+      if (filenameOnly && !filenameOnly.includes('..')) {
+        const rootResult = await serviceSupabase.storage
+          .from('sop-videos')
+          .createSignedUrl(filenameOnly, 3600)
+        if (rootResult.data?.signedUrl) {
+          return NextResponse.json({ url: rootResult.data.signedUrl })
+        }
+      }
+    }
 
     if (error) {
-      if (process.env.NODE_ENV === 'development') {
-        console.error('Error creating signed URL:', {
-          error: error.message,
-          path: filePath,
-          originalPath: path,
-        })
+      const isNotFound = error.message === 'Object not found' || error.message?.includes('not found')
+      if (process.env.NODE_ENV === 'development' && !isNotFound) {
+        console.error('Error creating signed URL:', { error: error.message, path: filePath })
       }
       return NextResponse.json(
-        { 
-          error: error.message || 'Failed to create signed URL',
-          details: process.env.NODE_ENV === 'development' ? error : undefined
-        },
-        { status: 500 }
+        { error: error.message || 'Failed to create signed URL' },
+        { status: isNotFound ? 404 : 500 }
       )
     }
 

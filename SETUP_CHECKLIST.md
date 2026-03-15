@@ -103,6 +103,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 # Optional: your user UUID (from Supabase Auth → Users). Only this user can access Admin → Manage editors.
 SUPER_USER_ID=your-user-uuid-here
+# For production (e.g. Vercel): your app URL so OAuth redirects to the deployed app, not localhost.
+# NEXT_PUBLIC_APP_URL=https://your-app.vercel.app
 ```
 
 **Replace the values** with what you copied from Supabase. For `SUPER_USER_ID`, use your own user UUID from **Authentication → Users** in Supabase. Only that user can open **Manage editors** (admin cabinet) to add or remove who can create SOPs. If you also want to create SOPs yourself, add your own email in that cabinet so you appear in the editors list.
@@ -243,7 +245,9 @@ Camera access requires HTTPS in production. For testing:
    # Deploy
    vercel
    ```
-   - Add environment variables in Vercel dashboard
+   - Add environment variables in Vercel dashboard (including `NEXT_PUBLIC_APP_URL=https://your-app.vercel.app` so Google OAuth redirects to the app, not localhost).
+   - **Supabase**: Authentication → URL Configuration → set **Site URL** to your Vercel URL and add `https://your-app.vercel.app/auth/callback` to **Redirect URLs**.
+   - **Google OAuth** (if used): In Google Cloud Console, add `https://your-app.vercel.app/auth/callback` to the OAuth client’s authorized redirect URIs.
    - Get HTTPS URL for mobile testing
 
 3. **Customize**:

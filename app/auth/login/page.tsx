@@ -61,10 +61,16 @@ function LoginContent() {
     setLoading(true)
     setError(null)
     try {
-      const origin = typeof window !== 'undefined' ? window.location.origin : ''
+      // Use NEXT_PUBLIC_APP_URL on Vercel (e.g. https://your-app.vercel.app) so OAuth redirects to production, not localhost
+      const baseUrl =
+        typeof process.env.NEXT_PUBLIC_APP_URL === 'string' && process.env.NEXT_PUBLIC_APP_URL
+          ? process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, '')
+          : typeof window !== 'undefined'
+            ? window.location.origin
+            : ''
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: `${origin}/auth/callback` },
+        options: { redirectTo: `${baseUrl}/auth/callback` },
       })
       if (oauthError) {
         setError(oauthError.message)

@@ -15,10 +15,11 @@ export default function SetPasswordPage() {
   const [checking, setChecking] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    void (async () => {
+      const { data } = await supabase.auth.getUser()
       setChecking(false)
-      if (!user) router.replace('/auth/login')
-    })
+      if (!data.user) router.replace('/auth/login')
+    })()
   }, [supabase, router])
 
   const handleSubmit = async (e: React.FormEvent) => {

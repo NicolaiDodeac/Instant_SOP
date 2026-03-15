@@ -103,9 +103,12 @@ export default function DashboardPage() {
             <div className="text-center py-8">Loading...</div>
           ) : (() => {
             const displaySops = sops.filter((s) => s.published && s.share_slug)
+            const totalCount = sops.length
             return displaySops.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
-                No published SOPs to view yet.
+                {totalCount === 0
+                  ? 'No SOPs yet. Create one from Create / Edit SOPs.'
+                  : 'No published SOPs to view yet. Publish one from the editor.'}
               </div>
             ) : (
               <div className="space-y-2">

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP } from '@/lib/types'
-import { listDrafts } from '@/lib/idb'
+import { listDrafts, deleteDraft } from '@/lib/idb'
 import type { DraftSOP } from '@/lib/types'
 
 export default function EditorListPage() {
@@ -15,6 +15,8 @@ export default function EditorListPage() {
   const [drafts, setDrafts] = useState<DraftSOP[]>([])
   const [loading, setLoading] = useState(true)
   const [isEditor, setIsEditor] = useState<boolean | null>(null)
+  const [isSuperUser, setIsSuperUser] = useState(false)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [newTitle, setNewTitle] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
@@ -33,10 +35,15 @@ export default function EditorListPage() {
 
   async function loadMe() {
     try {
-      const res = await fetch('/api/user/me')
+      const [res, userRes] = await Promise.all([
+        fetch('/api/user/me'),
+        supabase.auth.getUser(),
+      ])
       const data = await res.json()
       const editor = data?.isEditor === true
       setIsEditor(editor)
+      setIsSuperUser(data?.isSuperUser === true)
+      if (userRes.data?.user) setCurrentUserId(userRes.data.user.id)
       if (!editor) {
         router.replace('/dashboard')
         return
@@ -98,6 +105,25 @@ export default function EditorListPage() {
       setCreateError(null)
       router.push(`/editor/${data.id}`)
     }
+  }
+
+  async function handleDeleteSOP(e: React.MouseEvent, sop: SOP) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!confirm(`Delete "${sop.title}"? This cannot be undone.`)) return
+    const canDelete = currentUserId === sop.owner || isSuperUser
+    if (!canDelete) {
+      alert('You can only delete your own SOPs, unless you are a super user.')
+      return
+    }
+    const { error } = await supabase.from('sops').delete().eq('id', sop.id)
+    if (error) {
+      console.error('Failed to delete SOP:', error)
+      alert('Could not delete SOP.')
+      return
+    }
+    await deleteDraft(sop.id)
+    setSops((prev) => prev.filter((s) => s.id !== sop.id))
   }
 
   if (loading || isEditor === false) {
@@ -210,28 +236,41 @@ export default function EditorListPage() {
             </div>
           ) : (
             <div className="space-y-2">
-              {sops.map((sop) => (
-                <div
-                  key={sop.id}
-                  onClick={() => router.push(`/editor/${sop.id}`)}
-                  className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer touch-target"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-semibold">{sop.title}</h3>
+              {sops.map((sop) => {
+                const canDeleteSop = currentUserId === sop.owner || isSuperUser
+                return (
+                  <div
+                    key={sop.id}
+                    onClick={() => router.push(`/editor/${sop.id}`)}
+                    className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer touch-target flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-semibold truncate">{sop.title}</h3>
                       <p className="text-sm text-gray-600 dark:text-gray-400">
                         {sop.published ? 'Published' : 'Draft'} •{' '}
                         {new Date(sop.created_at).toLocaleDateString()}
                       </p>
                     </div>
-                    {sop.published && (
-                      <span className="text-xs bg-green-200 dark:bg-green-800 px-2 py-1 rounded">
-                        Live
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      {sop.published && (
+                        <span className="text-xs bg-green-200 dark:bg-green-800 px-2 py-1 rounded">
+                          Live
+                        </span>
+                      )}
+                      {canDeleteSop && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteSOP(e, sop)}
+                          className="p-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white touch-target"
+                          aria-label={`Delete ${sop.title}`}
+                        >
+                          🗑️
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

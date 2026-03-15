@@ -19,8 +19,19 @@ export async function GET() {
       .eq('user_id', user.id)
       .maybeSingle()
 
-    const superUserId = process.env.SUPER_USER_ID
-    const isSuperUser = !!superUserId && superUserId === user.id
+    let isSuperUser = false
+    try {
+      const { data: superUserRow } = await supabase
+        .from('super_users')
+        .select('user_id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      isSuperUser = !!superUserRow
+    } catch {
+      // super_users table may not exist yet if migration not run
+    }
+    const superUserIdEnv = process.env.SUPER_USER_ID
+    if (!!superUserIdEnv && superUserIdEnv === user.id) isSuperUser = true
     const isEditor = !!editorRow || isSuperUser
 
     return NextResponse.json({

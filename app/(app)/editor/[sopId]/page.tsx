@@ -36,9 +36,11 @@ export default function EditorPage() {
   const [loading, setLoading] = useState(true)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [isEditor, setIsEditor] = useState<boolean | null>(null)
+  const [isSuperUser, setIsSuperUser] = useState(false)
   const [isOffline, setIsOffline] = useState(false)
   const stepInstructionsRef = useRef<string>('')
   const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
+  const canEdit = isOwner || isSuperUser
 
   useEffect(() => {
     void supabase.auth.getUser().then((res: { data?: { user?: { id: string } } }) => {
@@ -50,8 +52,14 @@ export default function EditorPage() {
   useEffect(() => {
     fetch('/api/user/me')
       .then((res) => res.json())
-      .then((data) => setIsEditor(data?.isEditor === true))
-      .catch(() => setIsEditor(false))
+      .then((data) => {
+        setIsEditor(data?.isEditor === true)
+        setIsSuperUser(data?.isSuperUser === true)
+      })
+      .catch(() => {
+        setIsEditor(false)
+        setIsSuperUser(false)
+      })
   }, [])
 
   // Non-editors must not use the editor: send to viewer or dashboard
@@ -744,9 +752,9 @@ export default function EditorPage() {
 
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
-      {!isOwner && (
+      {!canEdit && (
         <div className="z-10 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 px-2 py-1.5 text-center text-xs text-blue-800 dark:text-blue-200">
-          View only — only the owner can edit this SOP
+          View only — only the owner or a super user can edit this SOP
         </div>
       )}
       {/* Sticky header - thin */}
@@ -767,7 +775,7 @@ export default function EditorPage() {
                 Offline
               </span>
             )}
-            {isOwner && (
+            {canEdit && (
               <button
                 onClick={handlePublish}
                 className={`px-1.5 py-1.5 rounded  text-xs min-w-[40px] ${
@@ -800,7 +808,7 @@ export default function EditorPage() {
               {i + 1}
             </button>
           ))}
-          {isOwner && (
+          {canEdit && (
             <>
               <button
                 type="button"
@@ -837,14 +845,14 @@ export default function EditorPage() {
             onBlur={() => handleStepInstructionsBlur(currentStep.id)}
             placeholder="Describe what to do in this step…"
             rows={2}
-            readOnly={!isOwner}
+            readOnly={!canEdit}
             className="w-full min-h-[52px] md:min-h-[64px] px-3 text-base bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y disabled:opacity-90 disabled:cursor-not-allowed"
             autoComplete="off"
           />
 
           {/* Video + timeline */}
           {!currentStep.video_path && !videoUrl ? (
-            isOwner ? (
+            canEdit ? (
               <div className="-mx-3 md:mx-0">
                 <VideoCapture
                   stepId={currentStep.id}
@@ -874,7 +882,7 @@ export default function EditorPage() {
                   onDurationUpdate={setVideoDuration}
                   showControls={false}
                   seekTime={currentTime}
-                  filterAnnotationsByTime={!isOwner}
+                  filterAnnotationsByTime={!canEdit}
                 />
               </div>
               <TimeBar
@@ -899,7 +907,7 @@ export default function EditorPage() {
                 onSeek={setCurrentTime}
                 dragMode={timelineDragMode}
                 onDragModeChange={setTimelineDragMode}
-                disabled={!isOwner || !selectedAnnotationId}
+                disabled={!canEdit || !selectedAnnotationId}
                 selectionHint={
                   selectedAnnotationId
                     ? (() => {
@@ -912,7 +920,7 @@ export default function EditorPage() {
             </div>
           )}
 
-          {currentStep.video_path && videoUrl && isOwner && (
+          {currentStep.video_path && videoUrl && canEdit && (
               <AnnotToolbar
                 onAddArrow={() => handleAddAnnotation('arrow')}
                 onAddLabel={() => handleAddAnnotation('label')}

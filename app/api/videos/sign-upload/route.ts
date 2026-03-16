@@ -20,17 +20,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // ✅ 2. Simple filename validation (prevents path traversal)
-    // Must end with .mp4, no slashes, no path traversal characters
+    const isVideo = contentType.startsWith('video/') && filename.toLowerCase().endsWith('.mp4')
+    const isImage =
+      (contentType === 'image/jpeg' || contentType === 'image/png' || contentType === 'image/webp') &&
+      /\.(jpg|jpeg|png|webp)$/i.test(filename)
+
     if (
-      !filename.endsWith('.mp4') ||
+      !isVideo &&
+      !isImage
+    ) {
+      return NextResponse.json(
+        { error: 'Invalid file type. Use .mp4 for video or .jpg/.png/.webp for image.' },
+        { status: 400 }
+      )
+    }
+
+    if (
       filename.includes('/') ||
       filename.includes('\\') ||
       filename.includes('..') ||
       filename.length > 255
     ) {
       return NextResponse.json(
-        { error: 'Invalid filename format. Must be a .mp4 file with no path separators.' },
+        { error: 'Invalid filename format. No path separators allowed.' },
         { status: 400 }
       )
     }

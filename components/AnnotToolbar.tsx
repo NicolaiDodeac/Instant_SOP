@@ -14,7 +14,7 @@ interface AnnotToolbarProps {
   onStyleChange?: (style: { strokeWidth?: number; fontSize?: number }) => void
 }
 
-const ARROW_THICKNESS = { min: 2, max: 20, default: 5, small: 3, medium: 5, large: 12 }
+const ARROW_SIZE = { min: 20, max: 80, default: 35, small: 24, medium: 35, large: 65 }
 const LABEL_FONT_SIZE = { min: 12, max: 48, default: 28, small: 14, medium: 28, large: 36 }
 
 export default function AnnotToolbar({
@@ -31,7 +31,7 @@ export default function AnnotToolbar({
   const showLabelEditor = selectedLabelText !== undefined && onLabelTextChange !== undefined
   const showSizeControl = hasSelection && selectedAnnotationKind && onStyleChange
 
-  const arrowThickness = selectedAnnotationStyle?.strokeWidth ?? ARROW_THICKNESS.default
+  const arrowSize = selectedAnnotationStyle?.strokeWidth ?? ARROW_SIZE.default
   const labelFontSize = selectedAnnotationStyle?.fontSize ?? LABEL_FONT_SIZE.default
 
   return (
@@ -56,13 +56,13 @@ export default function AnnotToolbar({
       {showSizeControl && (
         <div className="space-y-1">
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300 block">
-            {selectedAnnotationKind === 'arrow' ? 'Arrow thickness' : 'Text size'}
+            {selectedAnnotationKind === 'arrow' ? 'Arrow size' : 'Text size'}
           </span>
           {selectedAnnotationKind === 'arrow' ? (
             <>
               <div className="flex gap-2">
                 {(['small', 'medium', 'large'] as const).map((preset) => {
-                  const v = ARROW_THICKNESS[preset]
+                  const v = ARROW_SIZE[preset]
                   const label = preset === 'small' ? 'S' : preset === 'medium' ? 'M' : 'L'
                   return (
                     <button
@@ -70,7 +70,7 @@ export default function AnnotToolbar({
                       type="button"
                       onClick={() => onStyleChange({ ...selectedAnnotationStyle, strokeWidth: v })}
                       className={`flex-1 py-2 rounded-lg text-sm font-medium touch-target ${
-                        arrowThickness === v
+                        arrowSize === v
                           ? 'bg-blue-600 text-white'
                           : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600'
                       }`}
@@ -83,14 +83,14 @@ export default function AnnotToolbar({
               <div className="flex items-center gap-2">
                 <input
                   type="range"
-                  min={ARROW_THICKNESS.min}
-                  max={ARROW_THICKNESS.max}
-                  value={arrowThickness}
+                  min={ARROW_SIZE.min}
+                  max={ARROW_SIZE.max}
+                  value={arrowSize}
                   onChange={(e) => onStyleChange({ ...selectedAnnotationStyle, strokeWidth: Number(e.target.value) })}
                   className="flex-1 h-10 accent-blue-600 touch-target"
                 />
                 <span className="text-sm font-medium text-gray-600 dark:text-gray-400 w-8 tabular-nums">
-                  {arrowThickness}
+                  {arrowSize}
                 </span>
               </div>
             </>

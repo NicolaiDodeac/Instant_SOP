@@ -446,6 +446,12 @@ export default function StepPlayer({
             }
           }}
         >
+          {/* Shared defs: drop shadow for arrow image */}
+          <defs>
+            <filter id="arrow-drop-shadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx={0} dy={2} stdDeviation={3} floodColor="rgba(0,0,0,0.5)" floodOpacity={1} />
+            </filter>
+          </defs>
           {dimensions.width > 0 && dimensions.height > 0 && visibleAnnotations.map((ann) => {
             const x = normToPixel(ann.x, dimensions.width)
             const y = normToPixel(ann.y, dimensions.height)
@@ -453,18 +459,23 @@ export default function StepPlayer({
 
             if (ann.kind === 'arrow') {
               const angle = ann.angle ?? 0
-              // Make arrows bigger - scale based on video dimensions
-              const baseLength = Math.min(dimensions.width, dimensions.height) * 0.15 // 15% of smaller dimension
-              const length = Math.max(80, baseLength) // At least 80px, but scale with video size
-              const endX = Math.cos((angle * Math.PI) / 180) * length
-              const endY = Math.sin((angle * Math.PI) / 180) * length
-              const color = isSelected ? '#ff0000' : ann.style?.color || '#00ff00'
-              const strokeWidth = ann.style?.strokeWidth || 5
+              const sizeMult = (ann.style?.strokeWidth ?? 35) / 35 // Scale with toolbar "Arrow size" (default 35)
+              const baseLength = Math.min(dimensions.width, dimensions.height) * 0.28
+              const length = Math.max(120, baseLength) * sizeMult
+              const rad = (angle * Math.PI) / 180
+              const endX = Math.cos(rad) * length
+              const endY = Math.sin(rad) * length
+              // PNG visual tip is ~88% along (image may have right padding); put rotate handle there
+              const tipRatio = 0.88
+              const tipX = Math.cos(rad) * length * tipRatio
+              const tipY = Math.sin(rad) * length * tipRatio
+              const arrowHeight = length * 0.28
 
               return (
                 <g
                   key={ann.id}
                   transform={`translate(${x}, ${y})`}
+                  filter="url(#arrow-drop-shadow)"
                   onMouseDown={(e) => handleAnnotationMouseDown(e, ann.id)}
                   onTouchStart={(e) => handleAnnotationMouseDown(e, ann.id)}
                   style={{ cursor: 'move' }}
@@ -479,37 +490,21 @@ export default function StepPlayer({
                     strokeWidth={32}
                     pointerEvents="stroke"
                   />
-                  {/* Arrow line */}
-                  <line
-                    x1={0}
-                    y1={0}
-                    x2={endX}
-                    y2={endY}
-                    stroke={color}
-                    strokeWidth={strokeWidth}
-                    markerEnd={`url(#arrowhead-${ann.id})`}
+                  {/* Arrow: PNG image (tail at origin, pointing right); rotated to match angle */}
+                  <image
+                    href="/88c94d22-6a88-414e-b516-3703d91d3f46.png"
+                    x={0}
+                    y={-arrowHeight / 2}
+                    width={length}
+                    height={arrowHeight}
+                    preserveAspectRatio="xMinYMid meet"
+                    transform={`rotate(${angle})`}
                   />
-                  {/* Arrowhead marker - bigger for larger arrows */}
-                  <defs>
-                    <marker
-                      id={`arrowhead-${ann.id}`}
-                      markerWidth={strokeWidth * 3}
-                      markerHeight={strokeWidth * 3}
-                      refX={strokeWidth * 2.5}
-                      refY={strokeWidth * 1.5}
-                      orient="auto"
-                    >
-                      <polygon
-                        points={`0 0, ${strokeWidth * 3} ${strokeWidth * 1.5}, 0 ${strokeWidth * 3}`}
-                        fill={color}
-                      />
-                    </marker>
-                  </defs>
                   
-                  {/* Rotate handle (when selected) */}
+                  {/* Rotate handle at arrow tip (visual tip, not image edge) */}
                   {isSelected && !filterAnnotationsByTime && (
                     <g
-                      transform={`translate(${endX}, ${endY})`}
+                      transform={`translate(${tipX}, ${tipY})`}
                       onMouseDown={(e) => {
                         e.stopPropagation()
                         handleRotateMouseDown(e, ann.id)

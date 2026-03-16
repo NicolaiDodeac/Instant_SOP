@@ -24,6 +24,7 @@ export default function VideoCapture({
   const chunksRef = useRef<Blob[]>([])
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const galleryInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     return () => {
@@ -176,7 +177,7 @@ export default function VideoCapture({
             {!recording ? (
               <>
                 <button
-                  onClick={startRecording}
+                  onClick={() => fileInputRef.current?.click()}
                   className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-lg touch-target"
                 >
                   Record
@@ -189,8 +190,15 @@ export default function VideoCapture({
                   onChange={handleFileSelect}
                   className="hidden"
                 />
+                <input
+                  ref={galleryInputRef}
+                  type="file"
+                  accept="video/*"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
                 <button
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => galleryInputRef.current?.click()}
                   className="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 px-4 rounded-lg touch-target"
                 >
                   Choose File

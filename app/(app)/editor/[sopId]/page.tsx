@@ -4,13 +4,20 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
-import { saveDraft, getDraft, getVideoBlob, markVideoUploaded, deleteVideoBlob } from '@/lib/idb'
+import { saveDraft, getDraft, deleteDraft, getVideoBlob, markVideoUploaded, deleteVideoBlob } from '@/lib/idb'
 import { nanoid } from 'nanoid'
 import VideoCapture from '@/components/VideoCapture'
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 /** True if id is a DB-generated UUID (not a local nanoid). */
 function isAnnotationIdFromDb(id: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+  return UUID_REGEX.test(id)
+}
+
+/** True if step id is from DB (sop_steps); false for draft steps with nanoid. */
+function isStepIdFromDb(stepId: string): boolean {
+  return UUID_REGEX.test(stepId)
 }
 import TimeBar, { type TimelineDragMode } from '@/components/TimeBar'
 import AnnotToolbar from '@/components/AnnotToolbar'
@@ -36,9 +43,15 @@ export default function EditorPage() {
   const [loading, setLoading] = useState(true)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [isEditor, setIsEditor] = useState<boolean | null>(null)
+  const [isSuperUser, setIsSuperUser] = useState(false)
   const [isOffline, setIsOffline] = useState(false)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'saving' | 'updated'>('idle')
+  const [loadedFromServer, setLoadedFromServer] = useState(false)
   const stepInstructionsRef = useRef<string>('')
   const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
+  const canEdit = isOwner || isSuperUser
+  const editAsDraft = canEdit && loadedFromServer
 
   useEffect(() => {
     void supabase.auth.getUser().then((res: { data?: { user?: { id: string } } }) => {
@@ -50,8 +63,14 @@ export default function EditorPage() {
   useEffect(() => {
     fetch('/api/user/me')
       .then((res) => res.json())
-      .then((data) => setIsEditor(data?.isEditor === true))
-      .catch(() => setIsEditor(false))
+      .then((data) => {
+        setIsEditor(data?.isEditor === true)
+        setIsSuperUser(data?.isSuperUser === true)
+      })
+      .catch(() => {
+        setIsEditor(false)
+        setIsSuperUser(false)
+      })
   }, [])
 
   // Non-editors must not use the editor: send to viewer or dashboard
@@ -93,6 +112,7 @@ export default function EditorPage() {
         .single()
 
       if (sopError || !sopData) {
+        setLoadedFromServer(false)
         // Try loading from draft
         const draft = await getDraft(sopId)
         if (draft) {
@@ -135,6 +155,7 @@ export default function EditorPage() {
       }
 
       setSop(sopData as SOP)
+      setLoadedFromServer(true)
 
       // Load steps
       const { data: stepsData } = await supabase
@@ -326,22 +347,19 @@ export default function EditorPage() {
         xhr.send(blob)
       })
 
-      // Update step with video_path
-      const { error } = await supabase
-        .from('sop_steps')
-        .update({ video_path: storagePath })
-        .eq('id', stepId)
-
-      if (!error) {
-        await markVideoUploaded(stepId)
-        // Update local state immediately so video shows up
-        setSteps((prev) =>
-          prev.map((s) => (s.id === stepId ? { ...s, video_path: storagePath } : s))
-        )
-        // Load the video URL right away
-        loadVideoUrl(storagePath)
-        // Also reload SOP to sync everything
-        loadSOP()
+      await markVideoUploaded(stepId)
+      setSteps((prev) =>
+        prev.map((s) => (s.id === stepId ? { ...s, video_path: storagePath } : s))
+      )
+      loadVideoUrl(storagePath)
+      if (editAsDraft) {
+        setHasUnsavedChanges(true)
+      } else {
+        const { error } = await supabase
+          .from('sop_steps')
+          .update({ video_path: storagePath })
+          .eq('id', stepId)
+        if (!error) loadSOP()
       }
     } catch (err) {
       console.error('Error uploading video:', err)
@@ -354,9 +372,11 @@ export default function EditorPage() {
     setSteps((prev) =>
       prev.map((s) => (s.id === stepId ? { ...s, instructions } : s))
     )
+    if (editAsDraft) setHasUnsavedChanges(true)
   }
 
   async function handleStepInstructionsBlur(stepId: string) {
+    if (editAsDraft) return
     const value = stepInstructionsRef.current
     if (isOffline) return
     await supabase
@@ -368,9 +388,21 @@ export default function EditorPage() {
   async function handleAddStep() {
     const newIdx = steps.length
     const newStepId = nanoid()
+    const newStep: SOPStep = {
+      id: newStepId,
+      sop_id: sopId,
+      idx: newIdx,
+      title: `Step ${newIdx + 1}`,
+    }
 
+    if (editAsDraft) {
+      setSteps((prev) => [...prev, newStep])
+      setCurrentStepId(newStepId)
+      setAnnotations((prev) => ({ ...prev, [newStepId]: [] }))
+      setHasUnsavedChanges(true)
+      return
+    }
     if (isOffline) {
-      // Save as draft
       const draft = await getDraft(sopId)
       if (draft) {
         draft.steps.push({
@@ -381,27 +413,43 @@ export default function EditorPage() {
         })
         await saveDraft(draft)
       }
-    } else {
-      const { data, error } = await supabase
-        .from('sop_steps')
-        .insert({
-          sop_id: sopId,
-          idx: newIdx,
-          title: `Step ${newIdx + 1}`,
-        })
-        .select()
-        .single()
+      setSteps((prev) => [...prev, newStep])
+      setCurrentStepId(newStepId)
+      setAnnotations((prev) => ({ ...prev, [newStepId]: [] }))
+      return
+    }
+    const { data, error } = await supabase
+      .from('sop_steps')
+      .insert({ sop_id: sopId, idx: newIdx, title: newStep.title })
+      .select()
+      .single()
 
-      if (!error && data) {
-        setSteps([...steps, data as SOPStep])
-        setCurrentStepId(data.id)
-      }
+    if (!error && data) {
+      setSteps((prev) => [...prev, data as SOPStep])
+      setCurrentStepId(data.id)
+      setAnnotations((prev) => ({ ...prev, [data.id]: [] }))
     }
   }
 
   async function handleDeleteStep(stepId: string, e?: React.MouseEvent) {
     e?.stopPropagation()
     if (steps.length <= 1) return
+    if (editAsDraft) {
+      setSteps((prev) => prev.filter((s) => s.id !== stepId))
+      setAnnotations((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
+      if (currentStepId === stepId) {
+        const remaining = steps.filter((s) => s.id !== stepId)
+        setCurrentStepId(remaining[0]?.id ?? null)
+        setVideoUrl(null)
+      }
+      setHasUnsavedChanges(true)
+      await deleteVideoBlob(stepId)
+      return
+    }
     if (isOffline) {
       const draft = await getDraft(sopId)
       if (draft) {
@@ -478,8 +526,8 @@ export default function EditorPage() {
       y: kind === 'label' ? 0.22 : 0.5, // Labels start near top to avoid play button; arrows stay centered
       angle: kind === 'arrow' ? 0 : undefined,
       text: kind === 'label' ? 'Label' : undefined,
-      style: kind === 'arrow' 
-        ? { color: '#00ff00', strokeWidth: 5 } // Big green arrow
+style: kind === 'arrow'
+        ? { color: '#00ff00', strokeWidth: 35 } // Arrow size (toolbar default = starting size)
         : { color: '#ffffff', fontSize: 28 }, // White label, larger default
     }
 
@@ -506,11 +554,13 @@ export default function EditorPage() {
       return { ...prev, [stepId]: [...stepAnnotations, newAnn] }
     })
 
-    // Save to server
-    if (!isOffline) {
-      // Prepare data for Supabase
-      // Don't send 'id' - let Supabase generate UUID, but keep our nanoid for local state
-      const dbAnnotation: any = {
+    if (editAsDraft) {
+      setHasUnsavedChanges(true)
+      return
+    }
+    // Save to server only when the step exists in DB and not editing as draft.
+    if (!isOffline && isStepIdFromDb(stepId)) {
+      const dbAnnotation: Record<string, unknown> = {
         step_id: newAnn.step_id,
         t_start_ms: newAnn.t_start_ms,
         t_end_ms: newAnn.t_end_ms,
@@ -518,59 +568,35 @@ export default function EditorPage() {
         x: newAnn.x,
         y: newAnn.y,
       }
-      
-      // Only include optional fields if they have values
-      if (newAnn.angle !== undefined) {
-        dbAnnotation.angle = newAnn.angle
-      }
-      if (newAnn.text !== undefined) {
-        dbAnnotation.text = newAnn.text
-      }
-      if (newAnn.style) {
-        dbAnnotation.style = newAnn.style
-      }
-      
-      const { data, error } = await supabase
-        .from('step_annotations')
-        .insert(dbAnnotation)
-        .select()
-        .single()
-      
-      if (error) {
+      if (newAnn.angle !== undefined) dbAnnotation.angle = newAnn.angle
+      if (newAnn.text !== undefined) dbAnnotation.text = newAnn.text
+      if (newAnn.style) dbAnnotation.style = newAnn.style
+
+      const res = await fetch('/api/annotations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(dbAnnotation),
+      })
+      const body = await res.json().catch(() => ({}))
+      const data = res.ok ? body : null
+      const err = !res.ok ? (body.error ?? res.statusText) : null
+
+      if (err) {
         if (process.env.NODE_ENV === 'development') {
-          console.error('Error saving annotation:', error, { 
-            errorMessage: error.message,
-            errorDetails: error.details,
-            errorHint: error.hint,
-            dbAnnotation, 
-            newAnn 
-          })
+          console.error('Error saving annotation:', err, { stepId, dbAnnotation })
         }
-        // Don't throw - annotation is already in local state
-      } else if (data) {
-        // Update local annotation with Supabase-generated UUID
-        // Replace the nanoid with the database UUID so future updates work
+      } else if (data?.id) {
         const annotationWithDbId = { ...newAnn, id: data.id }
-        // Use stepId variable to ensure we update the correct step's annotations
         setAnnotations(prev => {
           const stepAnnotations = prev[stepId] || []
-          const updatedAnnsWithDbId = stepAnnotations.map(ann =>
-            ann.id === newAnn.id ? annotationWithDbId : ann
-          )
-          return { ...prev, [stepId]: updatedAnnsWithDbId }
+          return {
+            ...prev,
+            [stepId]: stepAnnotations.map(ann =>
+              ann.id === newAnn.id ? annotationWithDbId : ann
+            ),
+          }
         })
-        // Keep the new annotation selected; its id changed from nanoid to UUID
         setSelectedAnnotationId(prev => (prev === newAnn.id ? data.id : prev))
-
-        if (process.env.NODE_ENV === 'development') {
-          console.log('Annotation saved to DB, updated local ID:', { 
-            oldId: newAnn.id, 
-            newId: data.id,
-            stepId,
-            stepTitle: step.title,
-            data 
-          })
-        }
       }
     }
   }
@@ -604,13 +630,14 @@ export default function EditorPage() {
       }
     }
 
-    // Save to server
+    if (editAsDraft) {
+      setHasUnsavedChanges(true)
+      return
+    }
+    // Save to server when not editing as draft
     if (!isOffline) {
       const isSavedToDb = isAnnotationIdFromDb(id)
-      
       if (isSavedToDb) {
-        // Annotation exists in DB - update it
-        // Build payload with valid types; DB has x,y in [0,1], times as int
         const cleanUpdates: Record<string, unknown> = {}
         if ('x' in updates && typeof updates.x === 'number') {
           cleanUpdates.x = Math.max(0, Math.min(1, updates.x))
@@ -627,41 +654,8 @@ export default function EditorPage() {
         if ('t_end_ms' in updates && typeof updates.t_end_ms === 'number') {
           cleanUpdates.t_end_ms = Math.round(updates.t_end_ms)
         }
-
-        // Only update if there are actual changes
-        if (Object.keys(cleanUpdates).length === 0) {
-          if (process.env.NODE_ENV === 'development') {
-            console.log('No changes to update for annotation:', id)
-          }
-          return
-        }
-
-        const { error } = await supabase
-          .from('step_annotations')
-          .update(cleanUpdates)
-          .eq('id', id)
-
-        if (error) {
-          if (process.env.NODE_ENV === 'development') {
-            console.error(
-              'Error updating annotation:',
-              error.message,
-              '| code:',
-              error.code,
-              '| id:',
-              id,
-              '| updates:',
-              cleanUpdates
-            )
-          }
-        } else if (process.env.NODE_ENV === 'development') {
-          console.log('Annotation updated successfully:', { id, cleanUpdates })
-        }
-      } else {
-        // Annotation not saved yet - it will be saved when created
-        // Just update local state
-        if (process.env.NODE_ENV === 'development') {
-          console.log('Annotation not yet saved to DB, skipping update:', id)
+        if (Object.keys(cleanUpdates).length > 0) {
+          await supabase.from('step_annotations').update(cleanUpdates).eq('id', id)
         }
       }
     }
@@ -675,7 +669,10 @@ export default function EditorPage() {
       return { ...prev, [currentStepId]: stepAnns.filter((ann) => ann.id !== id) }
     })
 
-    // Delete from server only if annotation was ever saved (has UUID)
+    if (editAsDraft) {
+      setHasUnsavedChanges(true)
+      return
+    }
     if (!isOffline && isAnnotationIdFromDb(id)) {
       await supabase.from('step_annotations').delete().eq('id', id)
     }
@@ -703,13 +700,90 @@ export default function EditorPage() {
     await saveDraft(draft)
   }
 
-  async function handlePublish() {
+  async function handleUpdateDraft() {
+    if (!sop) return
+    setUpdateStatus('saving')
+    try {
+      const payload = {
+        title: sop.title,
+        description: sop.description ?? null,
+        steps: steps.map((s) => ({
+          id: s.id,
+          idx: s.idx,
+          title: s.title,
+          instructions: s.instructions ?? null,
+          video_path: s.video_path ?? null,
+          duration_ms: s.duration_ms ?? null,
+        })),
+        annotations: Object.fromEntries(
+          steps.map((step) => [
+            step.id,
+            (annotations[step.id] || []).map((a) => ({
+              t_start_ms: a.t_start_ms,
+              t_end_ms: a.t_end_ms,
+              kind: a.kind,
+              x: a.x,
+              y: a.y,
+              angle: a.angle,
+              text: a.text,
+              style: a.style,
+            })),
+          ])
+        ),
+      }
+      const res = await fetch(`/api/sops/${sopId}/sync`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = res.ok ? await res.json() : null
+      if (!res.ok) throw new Error((data as { error?: string })?.error ?? res.statusText)
+      const newStepIds = (data as { newStepIds?: Record<string, string> })?.newStepIds ?? {}
+      if (Object.keys(newStepIds).length > 0) {
+        setSteps((prev) =>
+          prev.map((s) => ({ ...s, id: newStepIds[s.id] ?? s.id }))
+        )
+        setAnnotations((prev) => {
+          const next: Record<string, StepAnnotation[]> = {}
+          for (const [stepId, anns] of Object.entries(prev)) {
+            const finalId = newStepIds[stepId] ?? stepId
+            next[finalId] = anns.map((a) => ({ ...a, step_id: finalId }))
+          }
+          return next
+        })
+        setCurrentStepId((id) => (id ? (newStepIds[id] ?? id) : null))
+      }
+      setHasUnsavedChanges(false)
+      setUpdateStatus('updated')
+      await deleteDraft(sopId)
+      setTimeout(() => {
+        router.push('/dashboard')
+      }, 1200)
+    } catch (err) {
+      console.error('Sync failed:', err)
+      setUpdateStatus('idle')
+    }
+  }
+
+  async function handlePublishOrUpdate() {
     if (!sop) return
 
-    // Preserve existing share_slug if SOP is already published
-    // Only generate a new one if it doesn't exist
+    if (editAsDraft) {
+      await handleUpdateDraft()
+      return
+    }
+
+    if (sop.published) {
+      const { error } = await supabase
+        .from('sops')
+        .update({ title: sop.title, description: sop.description ?? null })
+        .eq('id', sop.id)
+      if (!error) setUpdateStatus('updated')
+      setTimeout(() => setUpdateStatus('idle'), 2000)
+      return
+    }
+
     const shareSlug = sop.share_slug || nanoid(8)
-    
     const { error } = await supabase
       .from('sops')
       .update({ published: true, share_slug: shareSlug })
@@ -744,39 +818,70 @@ export default function EditorPage() {
 
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
-      {!isOwner && (
+      {!canEdit && (
         <div className="z-10 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 px-2 py-1.5 text-center text-xs text-blue-800 dark:text-blue-200">
-          View only — only the owner can edit this SOP
+          View only — only the owner or a super user can edit this SOP
         </div>
       )}
       {/* Sticky header - thin */}
       <div className="z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
-        <div className="flex items-center justify-between px-1 py-0.5 min-h-[36px]">
+        <div className="flex items-center justify-between px-2 py-1.5 min-h-[44px]">
           <button
             onClick={() => router.push('/dashboard')}
-            className="text-blue-600 dark:text-blue-400 touch-target px-1 py-0.5 min-w-[40px] text-xs"
+            className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
+            aria-label="Back to dashboard"
           >
             ← Back
           </button>
-          <h1 className="flex-1 text-center font-semibold text-xs truncate px-0.5">
-            {sop.title}
-          </h1>
+          {canEdit ? (
+            <input
+              type="text"
+              value={sop.title}
+              onChange={(e) => {
+                setSop((prev) => (prev ? { ...prev, title: e.target.value } : null))
+                if (editAsDraft) setHasUnsavedChanges(true)
+              }}
+              className="flex-1 min-w-0 text-center font-semibold text-xs px-0.5 py-0.5 bg-transparent border border-transparent rounded focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              placeholder="SOP title"
+            />
+          ) : (
+            <h1 className="flex-1 text-center font-semibold text-xs truncate px-0.5">
+              {sop.title}
+            </h1>
+          )}
           <div className="flex items-center gap-0.5">
             {isOffline && (
               <span className="text-[10px] bg-yellow-200 dark:bg-yellow-800 px-1 py-0.5 rounded">
                 Offline
               </span>
             )}
-            {isOwner && (
+            {canEdit && (
               <button
-                onClick={handlePublish}
-                className={`px-1.5 py-1.5 rounded  text-xs min-w-[40px] ${
-                  sop.published
+                onClick={handlePublishOrUpdate}
+                disabled={updateStatus === 'saving'}
+                className={`px-1.5 py-1.5 rounded text-xs min-w-[40px] ${
+                  updateStatus === 'updated'
+                    ? 'bg-yellow-500 text-black'
+                    : updateStatus === 'saving'
+                    ? 'bg-gray-400 dark:bg-gray-600 text-white'
+                    : editAsDraft
+                    ? hasUnsavedChanges
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-300 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
+                    : sop.published
                     ? 'bg-green-600 text-white'
-                    : 'bg-gray-300 dark:bg-gray-700'
+                    : 'bg-gray-300 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
                 }`}
               >
-                {sop.published ? 'Published' : 'Publish'}
+                {updateStatus === 'saving'
+                  ? 'Saving…'
+                  : updateStatus === 'updated'
+                  ? 'Updated'
+                  : editAsDraft
+                  ? 'Update'
+                  : sop.published
+                  ? 'Update'
+                  : 'Publish'}
               </button>
             )}
           </div>
@@ -800,7 +905,7 @@ export default function EditorPage() {
               {i + 1}
             </button>
           ))}
-          {isOwner && (
+          {canEdit && (
             <>
               <button
                 type="button"
@@ -828,7 +933,7 @@ export default function EditorPage() {
       {/* Main editor: title + description at top, then video + timeline */}
       {currentStep && (
         <div className="p-2 md:p-3 space-y-2 md:space-y-3">
-          <h2 className="text-base md:text-lg font-semibold truncate">{currentStep.title}</h2>
+          <h2 className="text-xl md:text-lg font-semibold truncate">{currentStep.title}</h2>
 
           <textarea
             id="step-description"
@@ -837,14 +942,14 @@ export default function EditorPage() {
             onBlur={() => handleStepInstructionsBlur(currentStep.id)}
             placeholder="Describe what to do in this step…"
             rows={2}
-            readOnly={!isOwner}
-            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-base bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y disabled:opacity-90 disabled:cursor-not-allowed"
+            readOnly={!canEdit}
+            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y disabled:opacity-90 disabled:cursor-not-allowed"
             autoComplete="off"
           />
 
           {/* Video + timeline */}
           {!currentStep.video_path && !videoUrl ? (
-            isOwner ? (
+            canEdit ? (
               <div className="-mx-3 md:mx-0">
                 <VideoCapture
                   stepId={currentStep.id}
@@ -859,7 +964,7 @@ export default function EditorPage() {
             )
           ) : (
             <div className="space-y-1">
-              <div className="-mx-3 md:mx-0 rounded-none md:rounded-lg overflow-hidden">
+              <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
                 <StepPlayer
                   videoUrl={videoUrl}
                   annotations={currentAnnotations}
@@ -874,7 +979,7 @@ export default function EditorPage() {
                   onDurationUpdate={setVideoDuration}
                   showControls={false}
                   seekTime={currentTime}
-                  filterAnnotationsByTime={!isOwner}
+                  filterAnnotationsByTime={!canEdit}
                 />
               </div>
               <TimeBar
@@ -899,7 +1004,7 @@ export default function EditorPage() {
                 onSeek={setCurrentTime}
                 dragMode={timelineDragMode}
                 onDragModeChange={setTimelineDragMode}
-                disabled={!isOwner || !selectedAnnotationId}
+                disabled={!canEdit || !selectedAnnotationId}
                 selectionHint={
                   selectedAnnotationId
                     ? (() => {
@@ -912,7 +1017,7 @@ export default function EditorPage() {
             </div>
           )}
 
-          {currentStep.video_path && videoUrl && isOwner && (
+          {currentStep.video_path && videoUrl && canEdit && (
               <AnnotToolbar
                 onAddArrow={() => handleAddAnnotation('arrow')}
                 onAddLabel={() => handleAddAnnotation('label')}

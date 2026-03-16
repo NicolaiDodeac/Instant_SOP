@@ -116,10 +116,11 @@ export default function EditorListPage() {
       alert('You can only delete your own SOPs, unless you are a super user.')
       return
     }
-    const { error } = await supabase.from('sops').delete().eq('id', sop.id)
-    if (error) {
-      console.error('Failed to delete SOP:', error)
-      alert('Could not delete SOP.')
+    const res = await fetch(`/api/sops/${sop.id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      console.error('Failed to delete SOP:', res.status, body)
+      alert((body as { error?: string })?.error ?? 'Could not delete SOP.')
       return
     }
     await deleteDraft(sop.id)
@@ -137,13 +138,13 @@ export default function EditorListPage() {
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right pb-24 md:pb-4 safe-bottom bg-gray-50 dark:bg-gray-900">
       <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-        <div className="flex items-center gap-3 p-4">
+        <div className="flex gap-3 p-4 min-h-[44px]">
           <Link
             href="/dashboard"
-            className="text-gray-600 dark:text-gray-400 touch-target px-1 min-w-[32px]"
+            className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
             aria-label="Back to dashboard"
           >
-            ←
+            ← Back
           </Link>
           <h1 className="text-xl md:text-2xl font-bold truncate flex-1">Create / Edit SOPs</h1>
         </div>

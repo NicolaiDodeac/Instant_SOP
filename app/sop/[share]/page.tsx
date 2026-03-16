@@ -16,6 +16,7 @@ export default function PublicViewerPage() {
   const [steps, setSteps] = useState<SOPStep[]>([])
   const [annotations, setAnnotations] = useState<Record<string, StepAnnotation[]>>({})
   const [videoUrls, setVideoUrls] = useState<Record<string, string | null>>({})
+  const [imageUrls, setImageUrls] = useState<Record<string, string | null>>({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -82,31 +83,51 @@ export default function PublicViewerPage() {
   }
 
   async function loadAllVideos() {
-    const urls: Record<string, string | null> = {}
-    
+    const vUrls: Record<string, string | null> = {}
+    const iUrls: Record<string, string | null> = {}
+
     for (const step of steps) {
-      if (!step.video_path) {
-        urls[step.id] = null
-        continue
+      if (step.video_path) {
+        try {
+          const res = await fetch(
+            `/api/videos/signed-url?path=${encodeURIComponent(step.video_path)}`
+          )
+          if (res.ok) {
+            const { url } = await res.json()
+            vUrls[step.id] = url
+          } else {
+            vUrls[step.id] = null
+          }
+        } catch (err) {
+          console.error('Error loading video for step:', step.id, err)
+          vUrls[step.id] = null
+        }
+      } else {
+        vUrls[step.id] = null
       }
 
-      try {
-        const res = await fetch(
-          `/api/videos/signed-url?path=${encodeURIComponent(step.video_path)}`
-        )
-        if (res.ok) {
-          const { url } = await res.json()
-          urls[step.id] = url
-        } else {
-          urls[step.id] = null
+      if (step.image_path) {
+        try {
+          const res = await fetch(
+            `/api/videos/signed-url?path=${encodeURIComponent(step.image_path)}`
+          )
+          if (res.ok) {
+            const { url } = await res.json()
+            iUrls[step.id] = url
+          } else {
+            iUrls[step.id] = null
+          }
+        } catch (err) {
+          console.error('Error loading image for step:', step.id, err)
+          iUrls[step.id] = null
         }
-      } catch (err) {
-        console.error('Error loading video for step:', step.id, err)
-        urls[step.id] = null
+      } else {
+        iUrls[step.id] = null
       }
     }
-    
-    setVideoUrls(urls)
+
+    setVideoUrls(vUrls)
+    setImageUrls(iUrls)
   }
 
 
@@ -158,7 +179,8 @@ export default function PublicViewerPage() {
             key={step.id}
             step={step}
             annotations={annotations[step.id] || []}
-            videoUrl={videoUrls[step.id] || null}
+            videoUrl={step.image_path ? null : (videoUrls[step.id] || null)}
+            imageUrl={step.video_path ? null : (imageUrls[step.id] || null)}
             stepNumber={idx + 1}
             totalSteps={steps.length}
           />

@@ -5,6 +5,8 @@ import type { StepAnnotation } from '@/lib/types'
 
 interface StepPlayerProps {
   videoUrl: string | null
+  /** When set, display a static image instead of video (same annotation overlay; no timeline). */
+  imageUrl?: string | null
   annotations: StepAnnotation[]
   currentTime: number // in ms
   startTime: number // in ms
@@ -25,8 +27,11 @@ interface StepPlayerProps {
   filterAnnotationsByTime?: boolean
 }
 
+const IMAGE_NOMINAL_DURATION_MS = 1000
+
 export default function StepPlayer({
   videoUrl,
+  imageUrl,
   annotations,
   currentTime,
   startTime,
@@ -43,10 +48,12 @@ export default function StepPlayer({
   showAnnotationsOnlyInTimeRange,
   filterAnnotationsByTime,
 }: StepPlayerProps) {
+  const isImageMode = !!imageUrl
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
   const [isPlaying, setIsPlaying] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const imageRef = useRef<HTMLImageElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   
   const dragStateRef = useRef<{
@@ -87,9 +94,9 @@ export default function StepPlayer({
     return () => observer.disconnect()
   }, [updateDimensions])
 
-  // When video loads (e.g. coming back to SOP), re-measure after layout so annotations show
+  // When video or image loads, re-measure after layout so annotations show
   useEffect(() => {
-    if (!videoUrl) return
+    if (!videoUrl && !imageUrl) return
     let rafId = 0
     let timeoutId = 0
     rafId = requestAnimationFrame(() => {
@@ -100,10 +107,18 @@ export default function StepPlayer({
       cancelAnimationFrame(rafId)
       if (timeoutId) clearTimeout(timeoutId)
     }
-  }, [videoUrl, updateDimensions])
+  }, [videoUrl, imageUrl, updateDimensions])
 
-  // Sync video time and play state
+  // Image mode: report nominal duration once so parent/annotations work
   useEffect(() => {
+    if (isImageMode && onDurationUpdate) {
+      onDurationUpdate(IMAGE_NOMINAL_DURATION_MS)
+    }
+  }, [isImageMode, onDurationUpdate])
+
+  // Sync video time and play state (skip in image mode)
+  useEffect(() => {
+    if (isImageMode) return
     const video = videoRef.current
     if (!video) return
 
@@ -150,10 +165,11 @@ export default function StepPlayer({
       video.removeEventListener('ended', handleEnded)
       video.removeEventListener('loadedmetadata', handleLoadedMetadata)
     }
-  }, [onTimeUpdate, onDurationUpdate, videoUrl])
+  }, [onTimeUpdate, onDurationUpdate, videoUrl, isImageMode])
 
-  // Handle external seek
+  // Handle external seek (video only)
   useEffect(() => {
+    if (isImageMode) return
     const video = videoRef.current
     if (!video || seekTime === undefined) return
 
@@ -165,10 +181,11 @@ export default function StepPlayer({
         isSeekingRef.current = false
       }, 100)
     }
-  }, [seekTime])
+  }, [seekTime, isImageMode])
 
-  // Handle auto-play
+  // Handle auto-play (video only)
   useEffect(() => {
+    if (isImageMode) return
     const video = videoRef.current
     if (!video || !videoUrl) return
 
@@ -181,15 +198,14 @@ export default function StepPlayer({
     } else {
       video.pause()
     }
-  }, [autoPlay, videoUrl])
+  }, [autoPlay, videoUrl, isImageMode])
 
-  // Filter annotations by time for visibility
-  // showAnnotationsOnlyInTimeRange: editor can show only in-range (still allow editing when visible)
-  // filterAnnotationsByTime / showControls: viewer mode = filter + disable editing
-  const shouldFilterByTime =
-    showAnnotationsOnlyInTimeRange !== undefined
-      ? showAnnotationsOnlyInTimeRange
-      : (filterAnnotationsByTime !== undefined ? filterAnnotationsByTime : showControls)
+  // Filter annotations by time for visibility (images: show all)
+  const shouldFilterByTime = isImageMode
+    ? false
+    : (showAnnotationsOnlyInTimeRange !== undefined
+        ? showAnnotationsOnlyInTimeRange
+        : (filterAnnotationsByTime !== undefined ? filterAnnotationsByTime : showControls))
 
   const visibleAnnotations = shouldFilterByTime
     ? annotations.filter(
@@ -351,9 +367,10 @@ export default function StepPlayer({
   }, [handleAnnotationMouseMove, handleAnnotationMouseUp, handleRotateMouseMove, handleRotateMouseUp])
 
   const togglePlayPause = () => {
+    if (isImageMode) return
     const video = videoRef.current
     if (!video) return
-    
+
     if (video.paused) {
       video.play()
         .then(() => {
@@ -369,31 +386,40 @@ export default function StepPlayer({
     }
   }
 
-  if (!videoUrl) {
+  if (!videoUrl && !imageUrl) {
     return (
       <div className="w-full aspect-video bg-black rounded-lg flex items-center justify-center text-gray-400">
-        No video
+        No media
       </div>
     )
   }
 
   return (
     <div className="space-y-1">
-      {/* Portrait aspect (9/16) so vertical video fills width with no black sides; larger area */}
       <div
         ref={containerRef}
         className="relative w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto bg-black overflow-hidden rounded-lg aspect-[9/16] max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]"
       >
-        <video
-          ref={videoRef}
-          src={videoUrl}
-          className="w-full h-full object-contain"
-          playsInline
-          controls={showControls}
-          muted
-          loop={false} // Don't loop - let video play through to show all annotations
-        />
-        {!showControls && (
+        {isImageMode ? (
+          <img
+            ref={imageRef}
+            src={imageUrl!}
+            alt="Step"
+            className="w-full h-full object-contain"
+            onLoad={updateDimensions}
+          />
+        ) : (
+          <video
+            ref={videoRef}
+            src={videoUrl!}
+            className="w-full h-full object-contain"
+            playsInline
+            controls={showControls}
+            muted
+            loop={false}
+          />
+        )}
+        {!isImageMode && !showControls && (
           <div
             className="absolute inset-0 flex items-center justify-center pointer-events-none"
             style={{ zIndex: 20 }}

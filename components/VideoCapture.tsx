@@ -1,20 +1,24 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { saveVideoBlob } from '@/lib/idb'
+import { saveVideoBlob, saveImageBlob } from '@/lib/idb'
 
 interface VideoCaptureProps {
   stepId: string
   sopId: string
   onVideoCaptured: (blob: Blob, duration: number) => void
+  onImageCaptured?: (blob: Blob) => void
   existingVideoPath?: string
+  existingImagePath?: string
 }
 
 export default function VideoCapture({
   stepId,
   sopId,
   onVideoCaptured,
+  onImageCaptured,
   existingVideoPath,
+  existingImagePath,
 }: VideoCaptureProps) {
   const [recording, setRecording] = useState(false)
   const [duration, setDuration] = useState(0)
@@ -114,6 +118,20 @@ export default function VideoCapture({
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    e.target.value = ''
+
+    const isImage = file.type.startsWith('image/')
+    if (isImage && onImageCaptured) {
+      try {
+        await saveImageBlob(stepId, sopId, file)
+        onImageCaptured(file)
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : 'Failed to load image'
+        )
+      }
+      return
+    }
 
     try {
       const blob = file
@@ -148,10 +166,10 @@ export default function VideoCapture({
         </div>
       )}
 
-      {existingVideoPath ? (
+      {existingVideoPath || existingImagePath ? (
         <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
           <p className="text-sm text-green-700 dark:text-green-300">
-            Video uploaded
+            Media uploaded
           </p>
         </div>
       ) : (
@@ -193,7 +211,7 @@ export default function VideoCapture({
                 <input
                   ref={galleryInputRef}
                   type="file"
-                  accept="video/*"
+                  accept="video/*,image/*"
                   onChange={handleFileSelect}
                   className="hidden"
                 />

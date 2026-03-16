@@ -933,7 +933,7 @@ style: kind === 'arrow'
       {/* Main editor: title + description at top, then video + timeline */}
       {currentStep && (
         <div className="p-2 md:p-3 space-y-2 md:space-y-3">
-          <h2 className="text-base md:text-lg font-semibold truncate">{currentStep.title}</h2>
+          <h2 className="text-xl md:text-lg font-semibold truncate">{currentStep.title}</h2>
 
           <textarea
             id="step-description"
@@ -943,7 +943,7 @@ style: kind === 'arrow'
             placeholder="Describe what to do in this step…"
             rows={2}
             readOnly={!canEdit}
-            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-base bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y disabled:opacity-90 disabled:cursor-not-allowed"
+            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y disabled:opacity-90 disabled:cursor-not-allowed"
             autoComplete="off"
           />
 

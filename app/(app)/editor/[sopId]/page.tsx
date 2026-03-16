@@ -832,9 +832,22 @@ style: kind === 'arrow'
           >
             ← Back
           </button>
-          <h1 className="flex-1 text-center font-semibold text-xs truncate px-0.5">
-            {sop.title}
-          </h1>
+          {canEdit ? (
+            <input
+              type="text"
+              value={sop.title}
+              onChange={(e) => {
+                setSop((prev) => (prev ? { ...prev, title: e.target.value } : null))
+                if (editAsDraft) setHasUnsavedChanges(true)
+              }}
+              className="flex-1 min-w-0 text-center font-semibold text-xs px-0.5 py-0.5 bg-transparent border border-transparent rounded focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              placeholder="SOP title"
+            />
+          ) : (
+            <h1 className="flex-1 text-center font-semibold text-xs truncate px-0.5">
+              {sop.title}
+            </h1>
+          )}
           <div className="flex items-center gap-0.5">
             {isOffline && (
               <span className="text-[10px] bg-yellow-200 dark:bg-yellow-800 px-1 py-0.5 rounded">

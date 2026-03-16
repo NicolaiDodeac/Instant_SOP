@@ -116,10 +116,11 @@ export default function EditorListPage() {
       alert('You can only delete your own SOPs, unless you are a super user.')
       return
     }
-    const { error } = await supabase.from('sops').delete().eq('id', sop.id)
-    if (error) {
-      console.error('Failed to delete SOP:', error)
-      alert('Could not delete SOP.')
+    const res = await fetch(`/api/sops/${sop.id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      console.error('Failed to delete SOP:', res.status, body)
+      alert((body as { error?: string })?.error ?? 'Could not delete SOP.')
       return
     }
     await deleteDraft(sop.id)

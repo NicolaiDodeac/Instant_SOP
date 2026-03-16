@@ -751,14 +751,10 @@ style: kind === 'arrow'
           }
           return next
         })
-        setCurrentStepId((id) => (id ? (newStepIds[id] ?? id) : null))
+        setCurrentStepId((id) => (id ? newStepIds[id] ?? id : null))
       }
       setHasUnsavedChanges(false)
       setUpdateStatus('updated')
-      await deleteDraft(sopId)
-      setTimeout(() => {
-        router.push('/dashboard')
-      }, 1200)
     } catch (err) {
       console.error('Sync failed:', err)
       setUpdateStatus('idle')
@@ -769,7 +765,32 @@ style: kind === 'arrow'
     if (!sop) return
 
     if (editAsDraft) {
+      // 1) Sync the full draft (title, steps, annotations) to the DB
       await handleUpdateDraft()
+
+      // 2) If SOP is not published yet, publish it now so it appears on the dashboard
+      if (!sop.published) {
+        const shareSlug = sop.share_slug || nanoid(8)
+        const { error } = await supabase
+          .from('sops')
+          .update({
+            title: sop.title,
+            description: sop.description ?? null,
+            published: true,
+            share_slug: shareSlug,
+          })
+          .eq('id', sop.id)
+
+        if (!error) {
+          setSop((prev) =>
+            prev ? { ...prev, published: true, share_slug: shareSlug } : prev
+          )
+        }
+      }
+
+      // 3) Clear local draft and go back to dashboard
+      await deleteDraft(sopId)
+      router.push('/dashboard')
       return
     }
 
@@ -877,8 +898,6 @@ style: kind === 'arrow'
                   ? 'Saving…'
                   : updateStatus === 'updated'
                   ? 'Updated'
-                  : editAsDraft
-                  ? 'Update'
                   : sop.published
                   ? 'Update'
                   : 'Publish'}

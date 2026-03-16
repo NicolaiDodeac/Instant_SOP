@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
+import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
 import StepCard from '@/components/StepCard'
@@ -129,16 +130,25 @@ export default function PublicViewerPage() {
 
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
-      {/* Header */}
+      {/* Header with back arrow */}
       <div className="sticky top-0 z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-        <div className="p-4">
-          <h1 className="text-xl font-bold text-center">{sop.title}</h1>
-          {sop.description && (
-            <p className="text-sm text-gray-600 dark:text-gray-400 text-center mt-1">
-              {sop.description}
-            </p>
-          )}
+        <div className="flex gap-2 px-2 py-2 min-h-[44px]">
+          <Link
+            href="/dashboard"
+            className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
+            aria-label="Back to dashboard"
+          >
+            ← Back
+          </Link>
+          <h1 className="flex-1 text-xl font-bold text-center truncate pr-10">
+            {sop.title}
+          </h1>
         </div>
+        {sop.description && (
+          <p className="text-sm text-gray-600 dark:text-gray-400 text-center px-4 pb-3 mt-0">
+            {sop.description}
+          </p>
+        )}
       </div>
 
       {/* Scrollable feed of steps */}

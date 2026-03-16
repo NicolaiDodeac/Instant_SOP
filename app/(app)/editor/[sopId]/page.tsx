@@ -825,10 +825,11 @@ style: kind === 'arrow'
       )}
       {/* Sticky header - thin */}
       <div className="z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
-        <div className="flex items-center justify-between px-1 py-0.5 min-h-[36px]">
+        <div className="flex items-center justify-between px-2 py-1.5 min-h-[44px]">
           <button
             onClick={() => router.push('/dashboard')}
-            className="text-blue-600 dark:text-blue-400 touch-target px-1 py-0.5 min-w-[40px] text-xs"
+            className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
+            aria-label="Back to dashboard"
           >
             ← Back
           </button>
@@ -963,7 +964,7 @@ style: kind === 'arrow'
             )
           ) : (
             <div className="space-y-1">
-              <div className="-mx-3 md:mx-0 rounded-none md:rounded-lg overflow-hidden">
+              <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
                 <StepPlayer
                   videoUrl={videoUrl}
                   annotations={currentAnnotations}

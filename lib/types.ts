@@ -16,6 +16,7 @@ export interface SOPStep {
   instructions?: string
   video_path?: string
   thumbnail_path?: string
+  image_path?: string
   duration_ms?: number
 }
 
@@ -52,6 +53,7 @@ export interface DraftStep {
   videoBlob?: Blob
   videoPath?: string
   thumbnailPath?: string
+  imagePath?: string
   duration_ms?: number
   annotations: StepAnnotation[]
   uploadStatus?: 'pending' | 'compressing' | 'uploading' | 'uploaded' | 'failed'

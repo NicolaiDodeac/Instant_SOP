@@ -4,7 +4,18 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
-import { saveDraft, getDraft, deleteDraft, getVideoBlob, markVideoUploaded, deleteVideoBlob } from '@/lib/idb'
+import {
+  saveDraft,
+  getDraft,
+  deleteDraft,
+  getVideoBlob,
+  markVideoUploaded,
+  deleteVideoBlob,
+  getImageBlob,
+  markImageUploaded,
+  deleteImageBlob,
+  saveImageBlob,
+} from '@/lib/idb'
 import { compressVideoWithMediabunny } from '@/lib/video-compress-mediabunny'
 import { generateThumbnail } from '@/lib/thumbnail'
 import { nanoid } from 'nanoid'
@@ -358,6 +369,52 @@ export default function EditorPage() {
     }
 
     await processAndUploadVideo(blob, currentStepId, duration)
+  }
+
+  async function handleImageCaptured(blob: Blob) {
+    if (!currentStepId || !sopId) return
+
+    if (isOffline) {
+      loadLocalImage()
+      return
+    }
+
+    try {
+      const res = await fetch('/api/videos/sign-upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sopId, stepId: currentStepId, file: 'image' as const }),
+      })
+      if (!res.ok) throw new Error('Failed to get image upload URL')
+      const { signedUrl, storagePath } = await res.json()
+
+      const putRes = await fetch(signedUrl, {
+        method: 'PUT',
+        body: blob,
+        headers: { 'Content-Type': blob.type?.startsWith('image/') ? blob.type : 'image/jpeg' },
+      })
+      if (!putRes.ok) throw new Error('Image upload failed')
+
+      await markImageUploaded(currentStepId)
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.id === currentStepId ? { ...s, image_path: storagePath } : s
+        )
+      )
+      loadImageUrl(storagePath)
+      if (editAsDraft) {
+        setHasUnsavedChanges(true)
+      } else {
+        const { error } = await supabase
+          .from('sop_steps')
+          .update({ image_path: storagePath })
+          .eq('id', currentStepId)
+        if (!error) loadSOP()
+      }
+    } catch (err) {
+      console.error('Error uploading image:', err)
+      loadLocalImage()
+    }
   }
 
   async function processAndUploadVideo(blob: Blob, stepId: string, durationMs: number) {
@@ -1112,6 +1169,7 @@ style: kind === 'arrow'
                 />
               </div>
               {!currentStep.image_path && (
+                <>
                 <TimeBar
                   duration={videoDuration || currentStep.duration_ms || 0}
                   currentTime={currentTime}
@@ -1143,20 +1201,7 @@ style: kind === 'arrow'
                         })()
                       : undefined
                   }
-                }}
-                onSeek={setCurrentTime}
-                dragMode={timelineDragMode}
-                onDragModeChange={setTimelineDragMode}
-                disabled={!canEdit || !selectedAnnotationId}
-                selectionHint={
-                  selectedAnnotationId
-                    ? (() => {
-                        const ann = (currentAnnotations || []).find((a) => a.id === selectedAnnotationId)
-                        return ann ? `Editing selected ${ann.kind}` : undefined
-                      })()
-                    : undefined
-                }
-              />
+                />
               {currentStepId && canEdit && (() => {
                 const status = stepUploadStatus[currentStepId]
                 const progress = stepUploadProgress[currentStepId] ?? 0
@@ -1214,6 +1259,7 @@ style: kind === 'arrow'
                 }
                 return null
               })()}
+              </> )}
             </div>
           )}
 

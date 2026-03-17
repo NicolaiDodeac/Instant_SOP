@@ -22,12 +22,12 @@ export async function POST(request: NextRequest) {
       contentType?: string
       sopId?: string
       stepId?: string
-      file?: 'video' | 'thumbnail'
+      file?: 'video' | 'thumbnail' | 'image'
     }
 
     let storagePath: string
 
-    // New: structured path userId/sopId/stepId/video.mp4 or thumbnail.jpg
+    // New: structured path userId/sopId/stepId/video.mp4, thumbnail.jpg, or image.jpg
     if (sopId != null && stepId != null && file === 'video') {
       if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
         return NextResponse.json(
@@ -44,6 +44,14 @@ export async function POST(request: NextRequest) {
         )
       }
       storagePath = `${user.id}/${sopId}/${stepId}/thumbnail.jpg`
+    } else if (sopId != null && stepId != null && file === 'image') {
+      if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
+        return NextResponse.json(
+          { error: 'Invalid sopId or stepId for image upload.' },
+          { status: 400 }
+        )
+      }
+      storagePath = `${user.id}/${sopId}/${stepId}/image.jpg`
     } else if (filename && contentType) {
       // Legacy: single filename (userId/filename)
       if (

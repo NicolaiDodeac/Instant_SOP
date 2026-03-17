@@ -24,7 +24,7 @@ export async function PUT(
     const { title, description, steps = [], annotations: annotationsByStep = {} } = body as {
       title?: string
       description?: string
-      steps?: Array<{ id: string; idx: number; title: string; instructions?: string; video_path?: string; image_path?: string; duration_ms?: number }>
+      steps?: Array<{ id: string; idx: number; title: string; instructions?: string; video_path?: string; thumbnail_path?: string; duration_ms?: number }>
       annotations?: Record<string, Array<{ t_start_ms: number; t_end_ms: number; kind: 'arrow' | 'label'; x: number; y: number; angle?: number; text?: string; style?: object }>>
     }
 
@@ -59,7 +59,7 @@ export async function PUT(
         title: step.title ?? '',
         instructions: step.instructions ?? null,
         video_path: step.video_path ?? null,
-        image_path: step.image_path ?? null,
+        thumbnail_path: step.thumbnail_path ?? null,
         duration_ms: step.duration_ms ?? null,
       }
       if (isUuid(step.id) && existingIds.has(step.id)) {

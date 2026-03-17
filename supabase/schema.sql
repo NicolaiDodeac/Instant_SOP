@@ -24,7 +24,7 @@ create table if not exists sop_steps (
   title text not null,
   instructions text,
   video_path text,   -- storage path in sop-videos bucket
-  image_path text,   -- storage path for step image (screenshot/photo)
+  thumbnail_path text,
   duration_ms int,
   created_at timestamptz default now(),
   updated_at timestamptz default now()

@@ -22,16 +22,13 @@ let dbPromise: Promise<IDBPDatabase<SOPDB>> | null = null
 function getDB() {
   if (!dbPromise) {
     dbPromise = openDB<SOPDB>('sop-builder', 2, {
-      upgrade(db, oldVersion, newVersion) {
+      upgrade(db, oldVersion) {
         if (oldVersion < 1) {
           const draftStore = db.createObjectStore('drafts', {
             keyPath: 'id',
           })
           draftStore.createIndex('by-lastModified', 'lastModified')
           db.createObjectStore('videos', { keyPath: 'stepId' })
-        }
-        if (oldVersion < 2) {
-          db.createObjectStore('images', { keyPath: 'stepId' })
         }
       },
     })

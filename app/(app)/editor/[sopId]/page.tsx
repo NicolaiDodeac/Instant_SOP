@@ -4,11 +4,19 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
-import { saveDraft, getDraft, deleteDraft, getVideoBlob, markVideoUploaded, deleteVideoBlob, getImageBlob, markImageUploaded, deleteImageBlob } from '@/lib/idb'
+import { saveDraft, getDraft, deleteDraft, getVideoBlob, markVideoUploaded, deleteVideoBlob } from '@/lib/idb'
+import { compressVideoWithMediabunny } from '@/lib/video-compress-mediabunny'
+import { generateThumbnail } from '@/lib/thumbnail'
 import { nanoid } from 'nanoid'
 import VideoCapture from '@/components/VideoCapture'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
 
 /** True if id is a DB-generated UUID (not a local nanoid). */
 function isAnnotationIdFromDb(id: string): boolean {
@@ -49,6 +57,10 @@ export default function EditorPage() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'saving' | 'updated'>('idle')
   const [loadedFromServer, setLoadedFromServer] = useState(false)
+  const [stepUploadStatus, setStepUploadStatus] = useState<Record<string, 'compressing' | 'uploading' | 'failed' | null>>({})
+  const [stepUploadProgress, setStepUploadProgress] = useState<Record<string, number>>({})
+  const [stepUploadResult, setStepUploadResult] = useState<Record<string, 'compressed' | 'original' | null>>({})
+  const [stepUploadSizes, setStepUploadSizes] = useState<Record<string, { before: number; after: number } | null>>({})
   const stepInstructionsRef = useRef<string>('')
   const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
   const canEdit = isOwner || isSuperUser
@@ -134,7 +146,7 @@ export default function EditorPage() {
             title: s.title,
             instructions: s.instructions,
             video_path: s.videoPath,
-            image_path: s.imagePath,
+            thumbnail_path: s.thumbnailPath,
             duration_ms: s.duration_ms,
           }))
           setSteps(draftSteps)
@@ -338,116 +350,118 @@ export default function EditorPage() {
       s.id === currentStepId ? { ...s, duration_ms: duration } : s
     )
     setSteps(updatedSteps)
-    await uploadVideo(blob, currentStepId)
-  }
 
-  const IMAGE_NOMINAL_DURATION_MS = 1000
-
-  async function handleImageCaptured(blob: Blob) {
-    if (!currentStepId) return
-
-    const updatedSteps = steps.map((s) =>
-      s.id === currentStepId ? { ...s, duration_ms: IMAGE_NOMINAL_DURATION_MS } : s
-    )
-    setSteps(updatedSteps)
-    await uploadImage(blob, currentStepId)
-  }
-
-  async function uploadImage(blob: Blob, stepId: string) {
-    try {
-      const ext = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg'
-      const filename = `${stepId}-${Date.now()}.${ext}`
-      const contentType = blob.type || 'image/jpeg'
-      const res = await fetch('/api/videos/sign-upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename, contentType }),
-      })
-
-      if (!res.ok) throw new Error('Failed to get upload URL')
-
-      const { signedUrl, storagePath } = await res.json()
-
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest()
-        xhr.onload = () => (xhr.status === 200 ? resolve() : reject(new Error('Upload failed')))
-        xhr.onerror = () => reject(new Error('Upload failed'))
-        xhr.open('PUT', signedUrl)
-        xhr.setRequestHeader('Content-Type', contentType)
-        xhr.send(blob)
-      })
-
-      await markImageUploaded(stepId)
-      setSteps((prev) =>
-        prev.map((s) => (s.id === stepId ? { ...s, image_path: storagePath, duration_ms: IMAGE_NOMINAL_DURATION_MS } : s))
-      )
-      loadImageUrl(storagePath)
-      if (editAsDraft) setHasUnsavedChanges(true)
-      else {
-        const { error } = await supabase
-          .from('sop_steps')
-          .update({ image_path: storagePath, duration_ms: IMAGE_NOMINAL_DURATION_MS })
-          .eq('id', stepId)
-        if (!error) loadSOP()
-      }
-    } catch (err) {
-      console.error('Error uploading image:', err)
+    if (isOffline) {
+      // Blob already saved in IndexedDB by VideoCapture; play from local
+      loadLocalVideo()
+      return
     }
+
+    await processAndUploadVideo(blob, currentStepId, duration)
   }
 
-  async function uploadVideo(blob: Blob, stepId: string) {
+  async function processAndUploadVideo(blob: Blob, stepId: string, durationMs: number) {
+    if (currentStepId === stepId) {
+      loadLocalVideo()
+    }
+    setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'compressing' }))
+    setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+
     try {
-      const filename = `${stepId}-${Date.now()}.mp4`
-      const res = await fetch('/api/videos/sign-upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename, contentType: 'video/mp4' }),
-      })
-
-      if (!res.ok) throw new Error('Failed to get upload URL')
-
-      const { signedUrl, storagePath } = await res.json()
-
-      // Upload with progress
-      const xhr = new XMLHttpRequest()
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable) {
-          const progress = (e.loaded / e.total) * 100
-          // Update step upload status
+      let videoBlob: Blob
+      let usedCompression = false
+      try {
+        videoBlob = await compressVideoWithMediabunny(blob, {
+          onProgress: (p) => {
+            setStepUploadProgress((prev) => ({ ...prev, [stepId]: Math.round(p * 100) }))
+          },
+        })
+        usedCompression = true
+      } catch (err) {
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('Compression skipped:', err)
         }
+        videoBlob = blob
+      }
+
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'uploading' }))
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      const thumbnailBlob = await generateThumbnail(videoBlob)
+
+      const [resVideo, resThumb] = await Promise.all([
+        fetch('/api/videos/sign-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sopId, stepId, file: 'video' as const }),
+        }),
+        fetch('/api/videos/sign-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
+        }),
+      ])
+
+      if (!resVideo.ok) throw new Error('Failed to get video upload URL')
+      if (!resThumb.ok) throw new Error('Failed to get thumbnail upload URL')
+
+      const { signedUrl: videoSignedUrl, storagePath: videoStoragePath } = await resVideo.json()
+      const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = await resThumb.json()
+
+      const uploadVideoPromise = fetch(videoSignedUrl, {
+        method: 'PUT',
+        body: videoBlob,
+        headers: { 'Content-Type': videoBlob.type?.startsWith('video/') ? videoBlob.type : 'video/mp4' },
+      })
+      const uploadThumbPromise = fetch(thumbSignedUrl, {
+        method: 'PUT',
+        body: thumbnailBlob,
+        headers: { 'Content-Type': 'image/jpeg' },
       })
 
-      await new Promise<void>((resolve, reject) => {
-        xhr.onload = () => {
-          if (xhr.status === 200) {
-            resolve()
-          } else {
-            reject(new Error('Upload failed'))
-          }
-        }
-        xhr.onerror = () => reject(new Error('Upload failed'))
-        xhr.open('PUT', signedUrl)
-        xhr.setRequestHeader('Content-Type', 'video/mp4')
-        xhr.send(blob)
-      })
+      const [videoResp, thumbResp] = await Promise.all([uploadVideoPromise, uploadThumbPromise])
+      if (!videoResp.ok) throw new Error('Video upload failed')
+      if (!thumbResp.ok) throw new Error('Thumbnail upload failed')
 
       await markVideoUploaded(stepId)
       setSteps((prev) =>
-        prev.map((s) => (s.id === stepId ? { ...s, video_path: storagePath } : s))
+        prev.map((s) =>
+          s.id === stepId
+            ? {
+                ...s,
+                video_path: videoStoragePath,
+                thumbnail_path: thumbnailStoragePath,
+                duration_ms: durationMs,
+              }
+            : s
+        )
       )
-      loadVideoUrl(storagePath)
+      loadVideoUrl(videoStoragePath)
       if (editAsDraft) {
         setHasUnsavedChanges(true)
       } else {
         const { error } = await supabase
           .from('sop_steps')
-          .update({ video_path: storagePath })
+          .update({
+            video_path: videoStoragePath,
+            thumbnail_path: thumbnailStoragePath,
+            duration_ms: durationMs,
+          })
           .eq('id', stepId)
         if (!error) loadSOP()
       }
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: null }))
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      setStepUploadResult((prev) => ({ ...prev, [stepId]: usedCompression ? 'compressed' : 'original' }))
+      setStepUploadSizes((prev) => ({ ...prev, [stepId]: { before: blob.size, after: videoBlob.size } }))
+      setTimeout(() => {
+        setStepUploadResult((prev) => ({ ...prev, [stepId]: null }))
+        setStepUploadSizes((prev) => ({ ...prev, [stepId]: null }))
+      }, 5000)
     } catch (err) {
-      console.error('Error uploading video:', err)
-      // Will retry later when online
+      console.error('Error in video pipeline:', err)
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'failed' }))
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      // Blob remains in IndexedDB for retry
     }
   }
 
@@ -781,7 +795,7 @@ style: kind === 'arrow'
         title: step.title,
         instructions: step.instructions,
         videoPath: step.video_path,
-        imagePath: step.image_path,
+        thumbnailPath: step.thumbnail_path,
         duration_ms: step.duration_ms,
         annotations: annotations[step.id] || [],
       })),
@@ -804,7 +818,7 @@ style: kind === 'arrow'
           title: s.title,
           instructions: s.instructions ?? null,
           video_path: s.video_path ?? null,
-          image_path: s.image_path ?? null,
+          thumbnail_path: s.thumbnail_path ?? null,
           duration_ms: s.duration_ms ?? null,
         })),
         annotations: Object.fromEntries(
@@ -1129,8 +1143,77 @@ style: kind === 'arrow'
                         })()
                       : undefined
                   }
-                />
-              )}
+                }}
+                onSeek={setCurrentTime}
+                dragMode={timelineDragMode}
+                onDragModeChange={setTimelineDragMode}
+                disabled={!canEdit || !selectedAnnotationId}
+                selectionHint={
+                  selectedAnnotationId
+                    ? (() => {
+                        const ann = (currentAnnotations || []).find((a) => a.id === selectedAnnotationId)
+                        return ann ? `Editing selected ${ann.kind}` : undefined
+                      })()
+                    : undefined
+                }
+              />
+              {currentStepId && canEdit && (() => {
+                const status = stepUploadStatus[currentStepId]
+                const progress = stepUploadProgress[currentStepId] ?? 0
+                const result = stepUploadResult[currentStepId]
+                if (status === 'compressing' || status === 'uploading') {
+                  return (
+                    <div className="flex items-center gap-2 py-1.5 px-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-blue-800 dark:text-blue-200">
+                      <span>{status === 'compressing' ? 'Compressing…' : 'Uploading…'}</span>
+                      {progress > 0 && <span>{progress}%</span>}
+                    </div>
+                  )
+                }
+                if (status === 'failed') {
+                  return (
+                    <div className="flex items-center gap-2 py-1.5 px-2 bg-red-50 dark:bg-red-900/20 rounded-lg text-sm text-red-800 dark:text-red-200">
+                      <span>Upload failed.</span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!currentStepId) return
+                          const blob = await getVideoBlob(currentStepId)
+                          const step = steps.find((s) => s.id === currentStepId)
+                          if (blob && step) {
+                            await processAndUploadVideo(blob, currentStepId, step.duration_ms ?? 0)
+                          }
+                        }}
+                        className="font-medium underline touch-target"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )
+                }
+                if (result === 'compressed' || result === 'original') {
+                  const sizes = stepUploadSizes[currentStepId]
+                  return (
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-1.5 px-2 bg-green-50 dark:bg-green-900/20 rounded-lg text-sm text-green-800 dark:text-green-200">
+                      <span>
+                        {result === 'compressed'
+                          ? 'Uploaded (compressed)'
+                          : 'Uploaded (original — compression skipped)'}
+                      </span>
+                      {sizes && (
+                        <span className="text-green-700 dark:text-green-300">
+                          {formatBytes(sizes.before)} → {formatBytes(sizes.after)}
+                          {result === 'compressed' && sizes.after < sizes.before && (
+                            <span className="ml-0.5">
+                              ({Math.round((1 - sizes.after / sizes.before) * 100)}% smaller)
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  )
+                }
+                return null
+              })()}
             </div>
           )}
 

@@ -50,8 +50,12 @@ export default function VideoCapture({
         return
       }
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: true,
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 720 },
+          height: { ideal: 1280 },
+        },
+        audio: false,
       })
 
       if (videoRef.current) {
@@ -59,9 +63,12 @@ export default function VideoCapture({
         videoRef.current.play()
       }
 
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/mp4',
-      })
+      const mimeType = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm;codecs=vp9'
+      const recorderOptions: MediaRecorderOptions = {
+        mimeType,
+        videoBitsPerSecond: 1_500_000,
+      }
+      const mediaRecorder = new MediaRecorder(stream, recorderOptions)
 
       mediaRecorderRef.current = mediaRecorder
       chunksRef.current = []
@@ -73,7 +80,7 @@ export default function VideoCapture({
       }
 
       mediaRecorder.onstop = async () => {
-        const blob = new Blob(chunksRef.current, { type: 'video/mp4' })
+        const blob = new Blob(chunksRef.current, { type: mimeType.split(';')[0] })
         const durationMs = Math.round(duration * 1000)
 
         // Save to IndexedDB

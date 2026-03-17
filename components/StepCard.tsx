@@ -108,7 +108,8 @@ export default function StepCard({
               onSelectAnnotation={() => {}}
               onTimeUpdate={setCurrentTime}
               showControls={true} // Show native HTML5 video controls in public viewer
-              autoPlay={isVisible && !!videoUrl} // Auto-play when visible and video is loaded
+              // autoPlay={isVisible && !!videoUrl} 
+              autoPlay={false}// Auto-play when visible and video is loaded
               filterAnnotationsByTime={true} // Filter annotations by time in public viewer
             />
           </div>

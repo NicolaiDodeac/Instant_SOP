@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceRoleClient, createClientServer } from '@/lib/supabase/server'
 
+/** Allow UUID or nanoid (alphanumeric + hyphens). No path traversal. */
+function isValidSegment(s: string): boolean {
+  if (typeof s !== 'string' || s.length === 0 || s.length > 255) return false
+  return !s.includes('/') && !s.includes('\\') && !s.includes('..') && /^[a-zA-Z0-9_-]+$/.test(s)
+}
+
 export async function POST(request: NextRequest) {
   try {
-    // ✅ 1. Basic authentication check
     const supabase = await createClientServer()
     const { data: { user }, error: authError } = await supabase.auth.getUser()
 
@@ -11,39 +16,61 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { filename, contentType } = await request.json()
-
-    if (!filename || !contentType) {
-      return NextResponse.json(
-        { error: 'Missing filename or contentType' },
-        { status: 400 }
-      )
+    const body = await request.json()
+    const { filename, contentType, sopId, stepId, file } = body as {
+      filename?: string
+      contentType?: string
+      sopId?: string
+      stepId?: string
+      file?: 'video' | 'thumbnail'
     }
 
-    // ✅ 2. Simple filename validation (prevents path traversal)
-    // Must end with .mp4, no slashes, no path traversal characters
-    if (
-      !filename.endsWith('.mp4') ||
-      filename.includes('/') ||
-      filename.includes('\\') ||
-      filename.includes('..') ||
-      filename.length > 255
-    ) {
+    let storagePath: string
+
+    // New: structured path userId/sopId/stepId/video.mp4 or thumbnail.jpg
+    if (sopId != null && stepId != null && file === 'video') {
+      if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
+        return NextResponse.json(
+          { error: 'Invalid sopId or stepId for video upload.' },
+          { status: 400 }
+        )
+      }
+      storagePath = `${user.id}/${sopId}/${stepId}/video.mp4`
+    } else if (sopId != null && stepId != null && file === 'thumbnail') {
+      if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
+        return NextResponse.json(
+          { error: 'Invalid sopId or stepId for thumbnail upload.' },
+          { status: 400 }
+        )
+      }
+      storagePath = `${user.id}/${sopId}/${stepId}/thumbnail.jpg`
+    } else if (filename && contentType) {
+      // Legacy: single filename (userId/filename)
+      if (
+        !filename.endsWith('.mp4') ||
+        filename.includes('/') ||
+        filename.includes('\\') ||
+        filename.includes('..') ||
+        filename.length > 255
+      ) {
+        return NextResponse.json(
+          { error: 'Invalid filename format. Must be a .mp4 file with no path separators.' },
+          { status: 400 }
+        )
+      }
+      storagePath = `${user.id}/${filename}`
+    } else {
       return NextResponse.json(
-        { error: 'Invalid filename format. Must be a .mp4 file with no path separators.' },
+        { error: 'Missing (filename + contentType) or (sopId + stepId + file).' },
         { status: 400 }
       )
     }
 
     const serviceSupabase = createServiceRoleClient()
-    // Storage policies expect files in format: {userId}/{filename}.mp4
-    // The bucket name 'sop-videos' is already specified in .from('sop-videos')
-    const storagePath = `${user.id}/${filename}`
-
     const { data, error } = await serviceSupabase.storage
       .from('sop-videos')
       .createSignedUploadUrl(storagePath, {
-        upsert: false,
+        upsert: true,
       })
 
     if (error) {

@@ -42,6 +42,7 @@ export default function EditorPage() {
   const [annotations, setAnnotations] = useState<Record<string, StepAnnotation[]>>({})
   const [currentStepId, setCurrentStepId] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [videoDuration, setVideoDuration] = useState(0) // Track actual video duration from video element
   const [startTime, setStartTime] = useState(0)
@@ -210,7 +211,7 @@ export default function EditorPage() {
     }
   }
 
-  // Load video for current step
+  // Load video or image for current step
   useEffect(() => {
     if (!currentStepId) return
 
@@ -218,17 +219,22 @@ export default function EditorPage() {
     if (!step) return
 
     if (step.video_path) {
-      // Load signed URL
+      setImageUrl(null)
       loadVideoUrl(step.video_path)
+    } else if (step.image_path) {
+      setVideoUrl(null)
+      loadImageUrl(step.image_path)
     } else {
-      // Try loading from IndexedDB
+      setVideoUrl(null)
+      setImageUrl(null)
       loadLocalVideo()
+      loadLocalImage()
     }
 
     // Reset time range when switching steps
     setStartTime(0)
-    setEndTime(step.duration_ms || 0)
-    setSelectedAnnotationId(null) // Deselect annotation when switching steps
+    setEndTime(step.duration_ms ?? 0)
+    setSelectedAnnotationId(null)
   }, [currentStepId, steps])
 
   // Sync TimeBar with selected annotation's times
@@ -305,6 +311,32 @@ export default function EditorPage() {
       setVideoUrl(URL.createObjectURL(blob))
     } else {
       setVideoUrl(null)
+    }
+  }
+
+  async function loadImageUrl(imagePath: string) {
+    try {
+      const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(imagePath)}`)
+      if (res.ok) {
+        const { url } = await res.json()
+        setImageUrl(url)
+      } else {
+        const notFound = res.status === 404 || res.status === 500
+        if (notFound) loadLocalImage()
+        else setImageUrl(null)
+      }
+    } catch {
+      loadLocalImage()
+    }
+  }
+
+  async function loadLocalImage() {
+    if (!currentStepId) return
+    const blob = await getImageBlob(currentStepId)
+    if (blob) {
+      setImageUrl(URL.createObjectURL(blob))
+    } else {
+      setImageUrl(null)
     }
   }
 
@@ -511,9 +543,11 @@ export default function EditorPage() {
         const remaining = steps.filter((s) => s.id !== stepId)
         setCurrentStepId(remaining[0]?.id ?? null)
         setVideoUrl(null)
+        setImageUrl(null)
       }
       setHasUnsavedChanges(true)
       await deleteVideoBlob(stepId)
+      await deleteImageBlob(stepId)
       return
     }
     if (isOffline) {
@@ -532,8 +566,10 @@ export default function EditorPage() {
         const remaining = steps.filter((s) => s.id !== stepId)
         setCurrentStepId(remaining[0]?.id ?? null)
         setVideoUrl(null)
+        setImageUrl(null)
       }
       await deleteVideoBlob(stepId)
+      await deleteImageBlob(stepId)
       return
     }
     const { error } = await supabase.from('sop_steps').delete().eq('id', stepId)
@@ -551,8 +587,10 @@ export default function EditorPage() {
       const remaining = steps.filter((s) => s.id !== stepId)
       setCurrentStepId(remaining[0]?.id ?? null)
       setVideoUrl(null)
+      setImageUrl(null)
     }
     await deleteVideoBlob(stepId)
+    await deleteImageBlob(stepId)
   }
 
   async function handleAddAnnotation(kind: 'arrow' | 'label') {
@@ -1034,26 +1072,30 @@ style: kind === 'arrow'
             autoComplete="off"
           />
 
-          {/* Video + timeline */}
-          {!currentStep.video_path && !videoUrl ? (
+          {/* Video or image + timeline (timeline only for video) */}
+          {!currentStep.video_path && !videoUrl && !currentStep.image_path && !imageUrl ? (
             canEdit ? (
               <div className="-mx-3 md:mx-0">
                 <VideoCapture
                   stepId={currentStep.id}
                   sopId={sopId}
                   onVideoCaptured={handleVideoCaptured}
+                  onImageCaptured={handleImageCaptured}
+                  existingVideoPath={currentStep.video_path}
+                  existingImagePath={currentStep.image_path}
                 />
               </div>
             ) : (
               <div className="w-full aspect-video bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center text-gray-500">
-                No video for this step
+                No media for this step
               </div>
             )
           ) : (
             <div className="space-y-1">
               <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
                 <StepPlayer
-                  videoUrl={videoUrl}
+                  videoUrl={currentStep.image_path ? null : videoUrl}
+                  imageUrl={currentStep.video_path ? null : imageUrl}
                   annotations={currentAnnotations}
                   currentTime={currentTime}
                   startTime={startTime}
@@ -1069,23 +1111,37 @@ style: kind === 'arrow'
                   filterAnnotationsByTime={!canEdit}
                 />
               </div>
-              <TimeBar
-                duration={videoDuration || currentStep.duration_ms || 0}
-                currentTime={currentTime}
-                startTime={startTime}
-                endTime={endTime}
-                onStartTimeChange={(time) => {
-                  if (selectedAnnotationId) {
-                    handleAnnotationUpdate(selectedAnnotationId, { t_start_ms: time })
-                  } else {
-                    setStartTime(time)
-                  }
-                }}
-                onEndTimeChange={(time) => {
-                  if (selectedAnnotationId) {
-                    handleAnnotationUpdate(selectedAnnotationId, { t_end_ms: time })
-                  } else {
-                    setEndTime(time)
+              {!currentStep.image_path && (
+                <TimeBar
+                  duration={videoDuration || currentStep.duration_ms || 0}
+                  currentTime={currentTime}
+                  startTime={startTime}
+                  endTime={endTime}
+                  onStartTimeChange={(time) => {
+                    if (selectedAnnotationId) {
+                      handleAnnotationUpdate(selectedAnnotationId, { t_start_ms: time })
+                    } else {
+                      setStartTime(time)
+                    }
+                  }}
+                  onEndTimeChange={(time) => {
+                    if (selectedAnnotationId) {
+                      handleAnnotationUpdate(selectedAnnotationId, { t_end_ms: time })
+                    } else {
+                      setEndTime(time)
+                    }
+                  }}
+                  onSeek={setCurrentTime}
+                  dragMode={timelineDragMode}
+                  onDragModeChange={setTimelineDragMode}
+                  disabled={!canEdit || !selectedAnnotationId}
+                  selectionHint={
+                    selectedAnnotationId
+                      ? (() => {
+                          const ann = (currentAnnotations || []).find((a) => a.id === selectedAnnotationId)
+                          return ann ? `Editing selected ${ann.kind}` : undefined
+                        })()
+                      : undefined
                   }
                 }}
                 onSeek={setCurrentTime}
@@ -1161,7 +1217,7 @@ style: kind === 'arrow'
             </div>
           )}
 
-          {currentStep.video_path && videoUrl && canEdit && (
+          {(currentStep.video_path || currentStep.image_path) && (videoUrl || imageUrl) && canEdit && (
               <AnnotToolbar
                 onAddArrow={() => handleAddAnnotation('arrow')}
                 onAddLabel={() => handleAddAnnotation('label')}

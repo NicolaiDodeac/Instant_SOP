@@ -28,12 +28,21 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Verify user has access to this video by checking the step that owns it
-    const { data: step, error: stepError } = await supabase
+    // Verify user has access by checking the step that owns this media (video or image)
+    const { data: stepByVideo, error: stepVideoError } = await supabase
       .from('sop_steps')
       .select('sop_id, sops!inner(owner, published)')
       .eq('video_path', path)
       .maybeSingle()
+
+    const { data: stepByImage, error: stepImageError } = await supabase
+      .from('sop_steps')
+      .select('sop_id, sops!inner(owner, published)')
+      .eq('image_path', path)
+      .maybeSingle()
+
+    const step = stepByVideo ?? stepByImage
+    const stepError = stepByVideo ? stepVideoError : stepImageError
 
     if (step && !stepError) {
       const sopsData = step.sops

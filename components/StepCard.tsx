@@ -8,6 +8,7 @@ interface StepCardProps {
   step: SOPStep
   annotations: StepAnnotation[]
   videoUrl: string | null
+  imageUrl?: string | null
   stepNumber: number
   totalSteps: number
 }
@@ -16,6 +17,7 @@ export default function StepCard({
   step,
   annotations,
   videoUrl,
+  imageUrl = null,
   stepNumber,
   totalSteps,
 }: StepCardProps) {
@@ -61,7 +63,7 @@ export default function StepCard({
     return () => {
       observer.disconnect()
     }
-  }, [videoUrl, stepNumber])
+  }, [videoUrl, imageUrl, stepNumber])
 
   return (
     <div
@@ -92,12 +94,13 @@ export default function StepCard({
         </div>
       )}
 
-      {/* Video Player - Full Width with Rounded Corners */}
+      {/* Video or image - Full Width with Rounded Corners */}
       <div className="flex-1 bg-white dark:bg-gray-800 px-4 py-4">
-        {videoUrl ? (
+        {videoUrl || imageUrl ? (
           <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
             <StepPlayer
               videoUrl={videoUrl}
+              imageUrl={imageUrl}
               annotations={annotations}
               currentTime={currentTime}
               startTime={startTime}
@@ -116,7 +119,7 @@ export default function StepCard({
         ) : (
           <div className="w-full aspect-video bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center">
             <div className="text-center">
-              <p className="text-lg text-gray-500 dark:text-gray-400 mb-2">No video available</p>
+              <p className="text-lg text-gray-500 dark:text-gray-400 mb-2">No media available</p>
               <p className="text-sm text-gray-400 dark:text-gray-500">{step.title}</p>
             </div>
           </div>

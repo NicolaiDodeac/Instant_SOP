@@ -11,6 +11,10 @@ interface SOPDB extends DBSchema {
     key: string
     value: { blob: Blob; stepId: string; sopId: string; uploaded: boolean }
   }
+  images: {
+    key: string
+    value: { blob: Blob; stepId: string; sopId: string; uploaded: boolean }
+  }
 }
 
 let dbPromise: Promise<IDBPDatabase<SOPDB>> | null = null
@@ -99,4 +103,39 @@ export async function listPendingUploads(): Promise<
 export async function deleteVideoBlob(stepId: string): Promise<void> {
   const db = await getDB()
   await db.delete('videos', stepId)
+}
+
+export async function saveImageBlob(
+  stepId: string,
+  sopId: string,
+  blob: Blob
+): Promise<void> {
+  const db = await getDB()
+  await db.put('images', {
+    stepId,
+    sopId,
+    blob,
+    uploaded: false,
+  })
+}
+
+export async function getImageBlob(
+  stepId: string
+): Promise<Blob | undefined> {
+  const db = await getDB()
+  const row = await db.get('images', stepId)
+  return row?.blob
+}
+
+export async function markImageUploaded(stepId: string): Promise<void> {
+  const db = await getDB()
+  const row = await db.get('images', stepId)
+  if (row) {
+    await db.put('images', { ...row, uploaded: true })
+  }
+}
+
+export async function deleteImageBlob(stepId: string): Promise<void> {
+  const db = await getDB()
+  await db.delete('images', stepId)
 }

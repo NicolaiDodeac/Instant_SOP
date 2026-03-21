@@ -453,6 +453,10 @@ export default function EditorPage() {
 
   const currentStep = steps.find((s) => s.id === currentStepId)
   const currentAnnotations = currentStepId ? annotations[currentStepId] || [] : []
+  /** Same notion of “has media” as the StepPlayer branch: DB paths and/or resolved blob/signed URLs. */
+  const hasEditorMedia =
+    !!currentStep &&
+    !!(currentStep.video_path || currentStep.image_path || videoUrl || imageUrl)
 
   async function handleVideoCaptured(blob: Blob, duration: number) {
     if (!currentStepId) return
@@ -1112,6 +1116,25 @@ export default function EditorPage() {
     await deleteImageBlob(stepId)
   }
 
+  /** Leave cut/speed and timeline range handles when focusing annotations (canvas or toolbar). */
+  const exitVideoEditModesForAnnotation = useCallback(() => {
+    setCutMode(false)
+    setSpeedMode(false)
+    setCutError(null)
+    setSpeedError(null)
+    setTimelineDragMode('seek')
+  }, [])
+
+  const handleSelectAnnotation = useCallback(
+    (id: string | null) => {
+      if (id !== null) {
+        exitVideoEditModesForAnnotation()
+      }
+      setSelectedAnnotationId(id)
+    },
+    [exitVideoEditModesForAnnotation],
+  )
+
   async function handleAddAnnotation(kind: 'arrow' | 'label') {
     // Get the current step ID directly from state to avoid closure issues
     const stepId = currentStepId
@@ -1126,6 +1149,8 @@ export default function EditorPage() {
       console.error('Cannot add annotation: step not found', { stepId, steps })
       return
     }
+
+    exitVideoEditModesForAnnotation()
 
     // Determine default times for new annotation
     let defaultStartTime = startTime
@@ -1651,7 +1676,7 @@ style: kind === 'arrow'
                   onAnnotationUpdate={handleAnnotationUpdate}
                   onAnnotationDelete={handleAnnotationDelete}
                   selectedAnnotationId={selectedAnnotationId}
-                  onSelectAnnotation={setSelectedAnnotationId}
+                  onSelectAnnotation={handleSelectAnnotation}
                   onTimeUpdate={setCurrentTime}
                   onDurationUpdate={setVideoDuration}
                   showControls={false}
@@ -1660,7 +1685,7 @@ style: kind === 'arrow'
                   playbackRate={isVideoPreviewSpeedEnabled ? playbackRate : 1}
                 />
               </div>
-              {(videoUrl || imageUrl) && canEdit && (
+              {hasEditorMedia && canEdit && (
                   <div className="w-[calc(100%+1rem)] max-w-[100vw] -mx-2 px-2 md:w-full md:mx-0 md:max-w-none md:px-0 space-y-1.5">
                     <div className="flex w-full items-stretch justify-between gap-1.5 sm:gap-2">
                       <button
@@ -1991,7 +2016,7 @@ style: kind === 'arrow'
             </div>
           )}
 
-          {(videoUrl || imageUrl) && canEdit && (
+          {hasEditorMedia && canEdit && (
               <AnnotToolbar
                 hasSelection={!!selectedAnnotationId}
                 selectedLabelText={

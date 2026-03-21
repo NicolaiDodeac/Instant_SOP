@@ -457,6 +457,13 @@ export default function EditorPage() {
   const hasEditorMedia =
     !!currentStep &&
     !!(currentStep.video_path || currentStep.image_path || videoUrl || imageUrl)
+  const selectedAnnotationKind = selectedAnnotationId
+    ? currentAnnotations.find((a) => a.id === selectedAnnotationId)?.kind
+    : undefined
+  const arrowToolActive =
+    !cutMode && !speedMode && selectedAnnotationKind === 'arrow'
+  const labelToolActive =
+    !cutMode && !speedMode && selectedAnnotationKind === 'label'
 
   async function handleVideoCaptured(blob: Blob, duration: number) {
     if (!currentStepId) return
@@ -1691,7 +1698,11 @@ style: kind === 'arrow'
                       <button
                         type="button"
                         onClick={() => handleAddAnnotation('arrow')}
-                        className="flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600"
+                        className={`flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors ${
+                          arrowToolActive
+                            ? 'bg-emerald-600 text-white ring-2 ring-emerald-400 ring-offset-2'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                        }`}
                         title="Add arrow"
                         aria-label="Add arrow annotation"
                       >
@@ -1707,7 +1718,11 @@ style: kind === 'arrow'
                       <button
                         type="button"
                         onClick={() => handleAddAnnotation('label')}
-                        className="flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600"
+                        className={`flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors ${
+                          labelToolActive
+                            ? 'bg-sky-600 text-white ring-2 ring-sky-400 ring-offset-2'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                        }`}
                         title="Add label"
                         aria-label="Add label annotation"
                       >

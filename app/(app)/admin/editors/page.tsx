@@ -1,13 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 
 type Editor = { user_id: string; email: string | null }
 
 export default function AdminEditorsPage() {
-  const router = useRouter()
   const [editors, setEditors] = useState<Editor[]>([])
   const [loading, setLoading] = useState(true)
   const [forbidden, setForbidden] = useState(false)
@@ -86,34 +84,35 @@ export default function AdminEditorsPage() {
     }
   }
 
-  if (forbidden) {
-    return (
-      <div className="min-h-screen min-h-[100dvh] flex flex-col items-center justify-center p-4 bg-gray-50 dark:bg-gray-900">
-        <p className="text-gray-600 dark:text-gray-400 mb-4">You don’t have access to this page.</p>
+  const stickyHeader = (
+    <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
+      <div className="flex gap-3 p-4 min-h-[44px]">
         <Link
           href="/dashboard"
-          className="text-blue-600 dark:text-blue-400 underline touch-target"
+          className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
+          aria-label="Back to dashboard"
         >
-          Back to Dashboard
+          ← Back
         </Link>
+        <h1 className="text-xl md:text-2xl font-bold truncate flex-1">Manage editors</h1>
+      </div>
+    </div>
+  )
+
+  if (forbidden) {
+    return (
+      <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right safe-bottom bg-gray-50 dark:bg-gray-900">
+        {stickyHeader}
+        <div className="p-4">
+          <p className="text-gray-600 dark:text-gray-400">You don’t have access to this page.</p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right pb-20 md:pb-4 safe-bottom bg-gray-50 dark:bg-gray-900">
-      <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-        <div className="flex items-center gap-3 p-4">
-          <Link
-            href="/dashboard"
-            className="text-gray-600 dark:text-gray-400 touch-target px-1 min-w-[32px]"
-            aria-label="Back to dashboard"
-          >
-            ←
-          </Link>
-          <h1 className="text-xl md:text-2xl font-bold truncate flex-1">Manage editors</h1>
-        </div>
-      </div>
+      {stickyHeader}
 
       <div className="p-4 space-y-6">
         <p className="text-sm text-gray-600 dark:text-gray-400">

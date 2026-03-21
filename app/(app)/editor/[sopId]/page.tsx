@@ -30,6 +30,8 @@ import VideoCapture from '@/components/VideoCapture'
 
 const CUT_ICON_SRC = '/Film%20Editing.png'
 const SPEED_ICON_SRC = '/timer.png'
+const ARROW_ICON_SRC = '/88c94d22-6a88-414e-b516-3703d91d3f46.png'
+const LABEL_ICON_SRC = '/tag.png'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -1658,6 +1660,140 @@ style: kind === 'arrow'
                   playbackRate={isVideoPreviewSpeedEnabled ? playbackRate : 1}
                 />
               </div>
+              {(videoUrl || imageUrl) && canEdit && (
+                  <div className="w-[calc(100%+1rem)] max-w-[100vw] -mx-2 px-2 md:w-full md:mx-0 md:max-w-none md:px-0 space-y-1.5">
+                    <div className="flex w-full items-stretch justify-between gap-1.5 sm:gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleAddAnnotation('arrow')}
+                        className="flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600"
+                        title="Add arrow"
+                        aria-label="Add arrow annotation"
+                      >
+                        <Image
+                          src={ARROW_ICON_SRC}
+                          alt=""
+                          width={48}
+                          height={48}
+                          className="size-12 max-h-full w-auto object-contain opacity-90 dark:opacity-100"
+                          aria-hidden
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAddAnnotation('label')}
+                        className="flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600"
+                        title="Add label"
+                        aria-label="Add label annotation"
+                      >
+                        <Image
+                          src={LABEL_ICON_SRC}
+                          alt=""
+                          width={48}
+                          height={48}
+                          className="size-12 max-h-full w-auto object-contain opacity-90 dark:opacity-100"
+                          aria-hidden
+                        />
+                      </button>
+                      {isVideoCutEnabled && !currentStep.image_path && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (cutMode) {
+                                setCutMode(false)
+                                setCutError(null)
+                              } else {
+                                const dur = videoDuration || currentStep.duration_ms || 0
+                                setSpeedMode(false)
+                                setSpeedError(null)
+                                setCutMode(true)
+                                setCutError(null)
+                                setStartTime(currentTime)
+                                setEndTime(Math.min(currentTime + 2000, dur))
+                                setTimelineDragMode('seek')
+                              }
+                            }}
+                            className={`flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors ${
+                              cutMode
+                                ? 'bg-amber-500 text-white ring-2 ring-amber-400 ring-offset-2'
+                                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                            }`}
+                            title={cutMode ? 'Exit cut mode' : 'Set range to cut from video'}
+                            aria-label={cutMode ? 'Exit cut mode' : 'Cut video'}
+                          >
+                            <Image
+                              src={CUT_ICON_SRC}
+                              alt=""
+                              width={48}
+                              height={48}
+                              className="size-12 max-h-full w-auto object-contain opacity-90 dark:opacity-100"
+                              aria-hidden
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (speedMode) {
+                                setSpeedMode(false)
+                                setSpeedError(null)
+                              } else {
+                                const dur = videoDuration || currentStep.duration_ms || 0
+                                setCutMode(false)
+                                setCutError(null)
+                                setSpeedMode(true)
+                                setSpeedError(null)
+                                setStartTime(currentTime)
+                                setEndTime(Math.min(currentTime + 2000, dur))
+                                setTimelineDragMode('seek')
+                              }
+                            }}
+                            className={`flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors ${
+                              speedMode
+                                ? 'bg-violet-500 text-white ring-2 ring-violet-400 ring-offset-2'
+                                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                            }`}
+                            title={speedMode ? 'Exit speed mode' : 'Speed up a segment'}
+                            aria-label={speedMode ? 'Exit speed mode' : 'Speed up segment'}
+                          >
+                            <Image
+                              src={SPEED_ICON_SRC}
+                              alt=""
+                              width={48}
+                              height={48}
+                              className="size-12 max-h-full w-auto object-contain opacity-90 dark:opacity-100"
+                              aria-hidden
+                            />
+                          </button>
+                        </>
+                      )}
+                      {selectedAnnotationId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleAnnotationDelete(selectedAnnotationId)
+                            setSelectedAnnotationId(null)
+                          }}
+                          className="flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target bg-red-600 p-1 text-xl font-semibold text-white hover:bg-red-700"
+                          title="Delete selected annotation"
+                          aria-label="Delete selected annotation"
+                        >
+                          🗑️
+                        </button>
+                      )}
+                    </div>
+                    {isVideoCutEnabled && !currentStep.image_path && cutMode && (
+                      <p className="text-center text-sm text-amber-700 dark:text-amber-300 font-medium px-0.5">
+                        Select range to remove, then press Cut
+                      </p>
+                    )}
+                    {isVideoCutEnabled && !currentStep.image_path && speedMode && (
+                      <p className="text-center text-sm text-violet-700 dark:text-violet-300 font-medium px-0.5">
+                        Select range, pick factor, Apply
+                      </p>
+                    )}
+                  </div>
+                )}
               {isVideoPreviewSpeedEnabled &&
                 !currentStep.image_path &&
                 (videoUrl || currentStep.video_path) && (
@@ -1685,89 +1821,6 @@ style: kind === 'arrow'
                 <>
                 {isVideoCutEnabled && (
                 <>
-                {/* Cut mode: scissors toggles timeline for selecting segment to remove; Cut removes it */}
-                <div className="flex flex-wrap items-center gap-2 py-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (cutMode) {
-                        setCutMode(false)
-                        setCutError(null)
-                      } else {
-                        const dur = videoDuration || currentStep.duration_ms || 0
-                        setSpeedMode(false)
-                        setSpeedError(null)
-                        setCutMode(true)
-                        setCutError(null)
-                        setStartTime(currentTime)
-                        setEndTime(Math.min(currentTime + 2000, dur))
-                        setTimelineDragMode('seek')
-                      }
-                    }}
-                    className={`flex items-center justify-center rounded-lg touch-target p-0.5 transition-colors ${
-                      cutMode
-                        ? 'bg-amber-500 text-white ring-2 ring-amber-400 ring-offset-2'
-                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                    }`}
-                    title={cutMode ? 'Exit cut mode' : 'Set range to cut from video'}
-                    aria-label={cutMode ? 'Exit cut mode' : 'Cut video'}
-                  >
-                    <Image
-                      src={CUT_ICON_SRC}
-                      alt=""
-                      width={44}
-                      height={44}
-                      className="size-11 object-contain opacity-90 dark:opacity-100"
-                      aria-hidden
-                    />
-                  </button>
-                  {cutMode && (
-                    <span className="text-sm text-amber-700 dark:text-amber-300 font-medium">
-                      Select range to remove, then press Cut
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (speedMode) {
-                        setSpeedMode(false)
-                        setSpeedError(null)
-                      } else {
-                        const dur = videoDuration || currentStep.duration_ms || 0
-                        setCutMode(false)
-                        setCutError(null)
-                        setSpeedMode(true)
-                        setSpeedError(null)
-                        setStartTime(currentTime)
-                        setEndTime(Math.min(currentTime + 2000, dur))
-                        setTimelineDragMode('seek')
-                      }
-                    }}
-                    className={`flex items-center justify-center rounded-lg touch-target p-0.5 transition-colors ${
-                      speedMode
-                        ? 'bg-violet-500 text-white ring-2 ring-violet-400 ring-offset-2'
-                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                    }`}
-                    title={speedMode ? 'Exit speed mode' : 'Speed up a segment'}
-                    aria-label={speedMode ? 'Exit speed mode' : 'Speed up segment'}
-                  >
-                    <Image
-                      src={SPEED_ICON_SRC}
-                      alt=""
-                      width={44}
-                      height={44}
-                      className="size-11 object-contain opacity-90 dark:opacity-100"
-                      aria-hidden
-                    />
-                  </button>
-                  {speedMode && (
-                    <span className="text-sm text-violet-700 dark:text-violet-300 font-medium">
-                      Select range, pick factor, Apply
-                    </span>
-                  )}
-                </div>
-                </>
-                )}
                 <TimeBar
                   duration={videoDuration || currentStep.duration_ms || 0}
                   currentTime={currentTime}
@@ -1875,6 +1928,8 @@ style: kind === 'arrow'
                     </div>
                   </div>
                 )}
+                </>
+                )}
               {currentStepId && canEdit && (() => {
                 const status = stepUploadStatus[currentStepId]
                 const progress = stepUploadProgress[currentStepId] ?? 0
@@ -1936,16 +1991,8 @@ style: kind === 'arrow'
             </div>
           )}
 
-          {(currentStep.video_path || currentStep.image_path) && (videoUrl || imageUrl) && canEdit && (
+          {(videoUrl || imageUrl) && canEdit && (
               <AnnotToolbar
-                onAddArrow={() => handleAddAnnotation('arrow')}
-                onAddLabel={() => handleAddAnnotation('label')}
-                onDelete={() => {
-                  if (selectedAnnotationId) {
-                    handleAnnotationDelete(selectedAnnotationId)
-                    setSelectedAnnotationId(null)
-                  }
-                }}
                 hasSelection={!!selectedAnnotationId}
                 selectedLabelText={
                   selectedAnnotationId

@@ -1,9 +1,6 @@
 'use client'
 
 interface AnnotToolbarProps {
-  onAddArrow: () => void
-  onAddLabel: () => void
-  onDelete: () => void
   hasSelection: boolean
   /** When a label is selected: its text and callback to update. */
   selectedLabelText?: string
@@ -18,9 +15,6 @@ const ARROW_SIZE = { min: 20, max: 80, default: 35, small: 24, medium: 35, large
 const LABEL_FONT_SIZE = { min: 12, max: 48, default: 28, small: 14, medium: 28, large: 36 }
 
 export default function AnnotToolbar({
-  onAddArrow,
-  onAddLabel,
-  onDelete,
   hasSelection,
   selectedLabelText,
   onLabelTextChange,
@@ -133,30 +127,6 @@ export default function AnnotToolbar({
           )}
         </div>
       )}
-      <div className="flex gap-1.5">
-        <button
-          onClick={onAddArrow}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-lg touch-target flex items-center justify-center gap-1.5 text-sm"
-        >
-          <span>➡️</span>
-          <span>Arrow</span>
-        </button>
-        <button
-          onClick={onAddLabel}
-          className="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-3 rounded-lg touch-target flex items-center justify-center gap-1.5 text-sm"
-        >
-          <span>🏷️</span>
-          <span>Label</span>
-        </button>
-        {hasSelection && (
-          <button
-            onClick={onDelete}
-            className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-3 rounded-lg touch-target text-sm"
-          >
-            🗑️
-          </button>
-        )}
-      </div>
     </div>
   )
 }

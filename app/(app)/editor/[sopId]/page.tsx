@@ -19,7 +19,11 @@ import {
 } from '@/lib/idb'
 import { compressVideoWithMediabunny } from '@/lib/video-compress-mediabunny'
 import { generateThumbnail } from '@/lib/thumbnail'
-import { isVideoCutAsync, isVideoCutEnabled } from '@/lib/feature-flags'
+import {
+  isVideoCutAsync,
+  isVideoCutEnabled,
+  isVideoPreviewSpeedEnabled,
+} from '@/lib/feature-flags'
 import { nanoid } from 'nanoid'
 import Image from 'next/image'
 import VideoCapture from '@/components/VideoCapture'
@@ -56,11 +60,11 @@ import TimeBar, { type TimelineDragMode } from '@/components/TimeBar'
 import AnnotToolbar from '@/components/AnnotToolbar'
 import StepPlayer from '@/components/StepPlayer'
 
-/** Editor-only preview; does not change exported video file. */
+/** Editor-only preview; does not change exported video file. Gated by NEXT_PUBLIC_ENABLE_VIDEO_PREVIEW_SPEED. */
 const VIDEO_PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4, 8] as const
 
-/** Server-side segment speed-up (ffmpeg); encoded into the file. */
-const SEGMENT_SPEED_FACTORS = [2, 3, 4, 8] as const
+/** Server-side segment speed change (ffmpeg); encoded into the file. Below 1 = slow, above 1 = fast. */
+const SEGMENT_SPEED_FACTORS = [0.5, 2, 3, 4, 8] as const
 
 export default function EditorPage() {
   const params = useParams()
@@ -354,8 +358,9 @@ export default function EditorPage() {
   }, [currentStepId, steps])
 
   useEffect(() => {
+    if (!isVideoPreviewSpeedEnabled) return
     setPlaybackRate(1)
-  }, [currentStepId])
+  }, [currentStepId, isVideoPreviewSpeedEnabled])
 
   // Save draft when annotations (or other draft data) change, so we always persist latest state
   useEffect(() => {
@@ -1650,30 +1655,32 @@ style: kind === 'arrow'
                   showControls={false}
                   seekTime={currentTime}
                   filterAnnotationsByTime={!canEdit}
-                  playbackRate={playbackRate}
+                  playbackRate={isVideoPreviewSpeedEnabled ? playbackRate : 1}
                 />
               </div>
-              {!currentStep.image_path && (videoUrl || currentStep.video_path) && (
-                <div className="flex flex-wrap items-center gap-2 py-1 px-0.5">
-                  <span className="text-xs text-gray-600 dark:text-gray-400 shrink-0">Preview speed</span>
-                  <div className="flex flex-wrap gap-1">
-                    {VIDEO_PREVIEW_SPEEDS.map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        onClick={() => setPlaybackRate(s)}
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold touch-target min-w-[40px] ${
-                          playbackRate === s
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
-                        }`}
-                      >
-                        {s === 1 ? '1×' : `${s}×`}
-                      </button>
-                    ))}
+              {isVideoPreviewSpeedEnabled &&
+                !currentStep.image_path &&
+                (videoUrl || currentStep.video_path) && (
+                  <div className="flex flex-wrap items-center gap-2 py-1 px-0.5">
+                    <span className="text-xs text-gray-600 dark:text-gray-400 shrink-0">Preview speed</span>
+                    <div className="flex flex-wrap gap-1">
+                      {VIDEO_PREVIEW_SPEEDS.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setPlaybackRate(s)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold touch-target min-w-[40px] ${
+                            playbackRate === s
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
+                          }`}
+                        >
+                          {s === 1 ? '1×' : `${s}×`}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
               {!currentStep.image_path && (
                 <>
                 {isVideoCutEnabled && (
@@ -1840,7 +1847,7 @@ style: kind === 'arrow'
                                 : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
                             }`}
                           >
-                            {f}×
+                            {f === 0.5 ? '0.5×' : `${f}×`}
                           </button>
                         ))}
                       </div>

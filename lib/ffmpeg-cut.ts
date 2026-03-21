@@ -121,7 +121,7 @@ async function getVideoDurationSec(bin: string, inPath: string): Promise<number>
 }
 
 /**
- * Speed up only [startMs, endMs) by `speed` (>1), concat with head and tail unchanged. No audio.
+ * Change playback speed only on [startMs, endMs): factor >1 = faster (shorter segment), 0<factor<1 = slower (longer). No audio.
  */
 export async function ffmpegSpeedSegment(
   inputBuffer: Buffer,
@@ -132,8 +132,14 @@ export async function ffmpegSpeedSegment(
   if (!(startMs >= 0) || !(endMs > startMs)) {
     throw new Error('Invalid speed range')
   }
-  if (!(speed > 1) || speed > 16 || !Number.isFinite(speed)) {
-    throw new Error('Speed factor must be between 1 and 16')
+  const ok =
+    Number.isFinite(speed) &&
+    speed > 0 &&
+    speed <= 16 &&
+    speed !== 1 &&
+    ((speed > 0 && speed < 1) || (speed > 1 && speed <= 16))
+  if (!ok) {
+    throw new Error('Speed factor must be in (0,1) or (1,16]')
   }
 
   const dir = await mkdtemp(join(tmpdir(), 'instant-sop-speed-'))

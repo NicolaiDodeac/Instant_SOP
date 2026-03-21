@@ -54,8 +54,19 @@ export async function POST(request: NextRequest) {
     if (!(startMs >= 0) || !(endMs > startMs)) {
       return NextResponse.json({ error: 'Invalid range' }, { status: 400 })
     }
-    if (typeof speedFactor !== 'number' || !(speedFactor > 1) || speedFactor > 16) {
-      return NextResponse.json({ error: 'speedFactor must be 1–16 (exclusive of 1)' }, { status: 400 })
+    if (typeof speedFactor !== 'number' || !Number.isFinite(speedFactor)) {
+      return NextResponse.json({ error: 'Invalid speedFactor' }, { status: 400 })
+    }
+    const speedOk =
+      speedFactor > 0 &&
+      speedFactor <= 16 &&
+      speedFactor !== 1 &&
+      ((speedFactor > 0 && speedFactor < 1) || (speedFactor > 1 && speedFactor <= 16))
+    if (!speedOk) {
+      return NextResponse.json(
+        { error: 'speedFactor must be between 0 and 1 (slow) or between 1 and 16 (fast), not 1' },
+        { status: 400 }
+      )
     }
 
     const resolved = await resolveStepVideoForProcessing(supabase, {

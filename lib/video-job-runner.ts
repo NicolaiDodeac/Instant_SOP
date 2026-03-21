@@ -36,7 +36,14 @@ export async function runVideoProcessingJob(jobId: string): Promise<boolean> {
 
   if (kind === 'speed') {
     const speedFactor = payload.speedFactor
-    if (typeof speedFactor !== 'number' || !(speedFactor > 1) || speedFactor > 16) {
+    const speedOk =
+      typeof speedFactor === 'number' &&
+      Number.isFinite(speedFactor) &&
+      speedFactor > 0 &&
+      speedFactor <= 16 &&
+      speedFactor !== 1 &&
+      ((speedFactor > 0 && speedFactor < 1) || (speedFactor > 1 && speedFactor <= 16))
+    if (!speedOk) {
       await service
         .from('video_processing_jobs')
         .update({

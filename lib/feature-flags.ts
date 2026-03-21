@@ -11,3 +11,10 @@ export const isVideoCutEnabled = process.env.NEXT_PUBLIC_ENABLE_VIDEO_CUT === 't
  * client polls `/api/videos/jobs/[id]`. On local dev, the job still runs in the same request.
  */
 export const isVideoCutAsync = process.env.NEXT_PUBLIC_VIDEO_CUT_ASYNC === 'true'
+
+/**
+ * Editor-only HTML5 preview playback speed (does not change the exported file).
+ * Off by default; set NEXT_PUBLIC_ENABLE_VIDEO_PREVIEW_SPEED=true to show 0.5×–8× buttons.
+ */
+export const isVideoPreviewSpeedEnabled =
+  process.env.NEXT_PUBLIC_ENABLE_VIDEO_PREVIEW_SPEED === 'true'

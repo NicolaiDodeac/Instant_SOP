@@ -53,7 +53,8 @@ self.addEventListener('fetch', (event) => {
     request.url.includes('supabase') ||
     request.method !== 'GET' ||
     request.url.includes('.mp4') ||
-    request.url.includes('sop-videos')
+    request.url.includes('sop-videos') ||
+    request.url.includes('r2.cloudflarestorage.com')
   ) {
     return // Let browser handle this request, don't intercept
   }

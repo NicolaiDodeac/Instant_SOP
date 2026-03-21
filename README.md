@@ -22,7 +22,7 @@ A mobile-first MVP for creating interactive video Standard Operating Procedures 
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS
 - **Database & Auth**: Supabase
-- **Storage**: Supabase Storage (videos)
+- **Media storage**: Cloudflare R2 (S3-compatible; videos/thumbnails/images)
 - **Overlays**: react-konva
 - **Offline**: IndexedDB (idb)
 - **QR Codes**: qrcode
@@ -30,7 +30,8 @@ A mobile-first MVP for creating interactive video Standard Operating Procedures 
 ## Prerequisites
 
 - Node.js 18+ and pnpm (or npm/yarn)
-- Supabase account and project
+- Supabase account and project (auth + Postgres)
+- Cloudflare account with an R2 bucket and API token (see `ENV_SETUP.md`)
 - Modern mobile browser (iOS Safari 14+, Android Chrome 90+)
 
 ## Setup Instructions
@@ -45,9 +46,9 @@ pnpm install
 ### 2. Supabase Setup
 
 1. Create a new Supabase project at [supabase.com](https://supabase.com)
-2. Go to SQL Editor and run the schema from `supabase/schema.sql`
-3. Go to Storage and verify the `sop-videos` bucket was created
-4. Get your project URL and anon key from Settings > API
+2. Go to SQL Editor and run the schema from `supabase/schema.sql` (or apply `supabase/migrations` via CLI)
+3. Get your project URL and anon key from Settings → API
+4. Create an R2 bucket and API token; configure CORS for your app origin (see `ENV_SETUP.md`)
 
 ### 3. Environment Variables
 
@@ -57,7 +58,15 @@ Create a `.env.local` file in the root directory:
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET_NAME=your-bucket-name
+R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+R2_REGION=auto
 ```
+
+Copy from `.env.example` and fill in; details in `ENV_SETUP.md`.
 
 **Important**: The service role key is needed for server-side operations like generating signed upload URLs. Keep it secure and never expose it to the client.
 

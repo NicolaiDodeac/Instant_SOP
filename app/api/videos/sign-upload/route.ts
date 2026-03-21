@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServiceRoleClient, createClientServer } from '@/lib/supabase/server'
+import { createClientServer } from '@/lib/supabase/server'
+import { presignPutObject } from '@/lib/r2'
 
 /** Allow UUID or nanoid (alphanumeric + hyphens). No path traversal. */
 function isValidSegment(s: string): boolean {
@@ -17,15 +18,21 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { filename, contentType, sopId, stepId, file } = body as {
-      filename?: string
-      contentType?: string
-      sopId?: string
-      stepId?: string
-      file?: 'video' | 'thumbnail' | 'image'
-    }
+    const { filename, contentType, sopId, stepId, file, videoContentType, imageContentType } =
+      body as {
+        filename?: string
+        contentType?: string
+        sopId?: string
+        stepId?: string
+        file?: 'video' | 'thumbnail' | 'image'
+        /** Must match the Content-Type header on the browser PUT to R2 (SigV4). */
+        videoContentType?: string
+        /** For file=image — must match the PUT Content-Type (e.g. image/jpeg, image/png). */
+        imageContentType?: string
+      }
 
     let storagePath: string
+    let putContentType: string | undefined
 
     // New: structured path userId/sopId/stepId/video.mp4, thumbnail.jpg, or image.jpg
     if (sopId != null && stepId != null && file === 'video') {
@@ -36,6 +43,10 @@ export async function POST(request: NextRequest) {
         )
       }
       storagePath = `${user.id}/${sopId}/${stepId}/video.mp4`
+      putContentType =
+        typeof videoContentType === 'string' && videoContentType.startsWith('video/')
+          ? videoContentType
+          : 'video/mp4'
     } else if (sopId != null && stepId != null && file === 'thumbnail') {
       if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
         return NextResponse.json(
@@ -44,6 +55,7 @@ export async function POST(request: NextRequest) {
         )
       }
       storagePath = `${user.id}/${sopId}/${stepId}/thumbnail.jpg`
+      putContentType = 'image/jpeg'
     } else if (sopId != null && stepId != null && file === 'image') {
       if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
         return NextResponse.json(
@@ -52,6 +64,10 @@ export async function POST(request: NextRequest) {
         )
       }
       storagePath = `${user.id}/${sopId}/${stepId}/image.jpg`
+      putContentType =
+        typeof imageContentType === 'string' && imageContentType.startsWith('image/')
+          ? imageContentType
+          : 'image/jpeg'
     } else if (filename && contentType) {
       // Legacy: single filename (userId/filename)
       if (
@@ -67,6 +83,7 @@ export async function POST(request: NextRequest) {
         )
       }
       storagePath = `${user.id}/${filename}`
+      putContentType = contentType
     } else {
       return NextResponse.json(
         { error: 'Missing (filename + contentType) or (sopId + stepId + file).' },
@@ -74,26 +91,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const serviceSupabase = createServiceRoleClient()
-    const { data, error } = await serviceSupabase.storage
-      .from('sop-videos')
-      .createSignedUploadUrl(storagePath, {
-        upsert: true,
-      })
-
-    if (error) {
-      console.error('Error creating signed upload URL:', error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
+    const signedUrl = await presignPutObject(storagePath, { contentType: putContentType })
 
     return NextResponse.json({
-      signedUrl: data.signedUrl,
+      signedUrl,
       storagePath,
     })
   } catch (error) {
     console.error('Error in sign-upload:', error)
+    const message = error instanceof Error ? error.message : 'Internal server error'
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: message },
       { status: 500 }
     )
   }

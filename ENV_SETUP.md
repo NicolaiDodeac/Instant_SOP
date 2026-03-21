@@ -59,6 +59,54 @@ After creating/updating `.env.local`:
 
 ⚠️ **Important**: Next.js only reads `.env.local` when the server starts. You must restart after changing environment variables.
 
+## Cloudflare R2 (all media: video, thumbnails, step photos)
+
+**Supabase** is used for **authentication and Postgres only** — there is **no** Supabase Storage bucket for this app. Video, thumbnails, and step images are stored as objects in **R2**; `video_path`, `thumbnail_path`, and `image_path` in the database are **R2 object keys**.
+
+Use `R2_*` variables **only on the server** (API routes, Vercel env). Never put them in `NEXT_PUBLIC_*` or client code.
+
+| Variable | Where to get it |
+|----------|-----------------|
+| **`R2_ACCOUNT_ID`** | Cloudflare dashboard: **R2** → URL or account area — 32-character hex **Account ID** (same id embedded in the S3 endpoint hostname). |
+| **`R2_ACCESS_KEY_ID`** | **R2** → **Manage R2 API tokens** → create **Account API token** with **Object Read & Write** → copy **Access Key ID** when the token is created. |
+| **`R2_SECRET_ACCESS_KEY`** | Same token creation screen — copy **Secret Access Key** immediately (often shown once). |
+| **`R2_BUCKET_NAME`** | The bucket name you chose (e.g. `instant-sop-videos`). **R2** → your bucket → **Settings** → **Name**. |
+| **`R2_ENDPOINT`** | **R2** → your bucket → **Settings** → **S3 API** — copy the full URL `https://<account-id>.r2.cloudflarestorage.com` (use **Copy**). |
+| **`R2_REGION`** | Set to **`auto`** for the AWS S3-compatible SDK with R2 (signing). |
+
+Example block for `.env.local` (replace with your values):
+
+```env
+R2_ACCOUNT_ID=your-32-char-account-id
+R2_ACCESS_KEY_ID=paste-from-token-creation
+R2_SECRET_ACCESS_KEY=paste-from-token-creation
+R2_BUCKET_NAME=instant-sop-videos
+R2_ENDPOINT=https://your-32-char-account-id.r2.cloudflarestorage.com
+R2_REGION=auto
+```
+
+`R2_ACCOUNT_ID` matches the subdomain in **`R2_ENDPOINT`** (the hex string before `.r2.cloudflarestorage.com`).
+
+**CORS (required for all media uploads):** Videos, thumbnails, and step photos are uploaded with **browser PUT** to **presigned R2 URLs**. Your bucket must allow your app origins. In R2 → bucket → **Settings** → **CORS**, use something like:
+
+```json
+[
+  {
+    "AllowedOrigins": ["http://localhost:3000", "https://your-production-domain.com"],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag", "Content-Length"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+If uploads show **Failed to fetch** in the console, fix **R2 CORS** first, then verify **Content-Type** matches what was sent when requesting the signed URL (`videoContentType`, `imageContentType`, or `image/jpeg` for thumbnails).
+
+**Vercel / production:** Uploads go **directly to R2** (not through the Next.js body limit). Check [Vercel limits](https://vercel.com/docs/functions/runtimes#request-body-size) only for other API routes (e.g. sync JSON).
+
+**Video cut (async):** If you use `NEXT_PUBLIC_VIDEO_CUT_ASYNC=true`, run the migration that creates `video_processing_jobs` (`supabase/migrations/20260322100000_video_processing_jobs.sql` or the block in `schema.sql`). On **Vercel**, cut work runs in the background via `waitUntil` (see `maxDuration` on `/api/videos/cut`). Locally, the job still completes in the same HTTP request.
+
 ## Verify Setup
 
 After restarting, check:
@@ -112,6 +160,7 @@ Instant_SOP/
 - ✅ `.env.local` is already in `.gitignore` (won't be committed)
 - ✅ Never share your `SUPABASE_SERVICE_ROLE_KEY`
 - ✅ The service role key bypasses security - keep it secret!
+- ✅ Never expose `R2_SECRET_ACCESS_KEY` or `R2_ACCESS_KEY_ID` to the browser — treat like the service role key.
 - ✅ For production, set these in your hosting platform (Vercel, etc.)
 
 ## Still Having Issues?

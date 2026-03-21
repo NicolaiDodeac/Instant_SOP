@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
+import { createClientServer } from '@/lib/supabase/server'
+import { headObjectExists, presignGetObject } from '@/lib/r2'
 
 export async function GET(request: NextRequest) {
   try {
@@ -10,25 +11,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing path parameter' }, { status: 400 })
     }
 
-    // Validate path format to prevent path traversal attacks
-    // Path should be in format: {userId}/{filename}.mp4 (no sop-videos/ prefix)
     if (path.includes('..') || !path.includes('/')) {
       return NextResponse.json({ error: 'Invalid path format' }, { status: 400 })
     }
 
     const supabase = await createClientServer()
 
-    // Check if user is authenticated
     const {
       data: { user },
       error: authError,
     } = await supabase.auth.getUser()
-
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Verify user has access by checking the step that owns this media (video or image)
     const { data: stepByVideo, error: stepVideoError } = await supabase
       .from('sop_steps')
       .select('sop_id, sops!inner(owner, published)')
@@ -41,66 +37,70 @@ export async function GET(request: NextRequest) {
       .eq('image_path', path)
       .maybeSingle()
 
-    const step = stepByVideo ?? stepByImage
-    const stepError = stepByVideo ? stepVideoError : stepImageError
+    const { data: stepByThumb, error: stepThumbError } = await supabase
+      .from('sop_steps')
+      .select('sop_id, sops!inner(owner, published)')
+      .eq('thumbnail_path', path)
+      .maybeSingle()
 
-    if (step && !stepError) {
-      const sopsData = step.sops
-      const sop = (Array.isArray(sopsData) ? sopsData[0] : sopsData) as { owner: string; published: boolean } | null | undefined
-      if (sop) {
-        // Check if user is owner or SOP is published
-        if (sop.owner !== user.id && !sop.published) {
-          return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-        }
-      }
+    if (stepVideoError) {
+      return NextResponse.json({ error: stepVideoError.message }, { status: 500 })
+    }
+    if (stepImageError) {
+      return NextResponse.json({ error: stepImageError.message }, { status: 500 })
+    }
+    if (stepThumbError) {
+      return NextResponse.json({ error: stepThumbError.message }, { status: 500 })
     }
 
-    // Use service role to create signed URL so any authenticated user who passed
-    // the access check above can get a URL. Storage RLS only allows reading when
-    // path folder = auth.uid(), which would block editors/viewers from owner's files.
-    const filePath = path
-    const serviceSupabase = createServiceRoleClient()
-    let data: { signedUrl?: string } | null = null
-    let error: { message?: string } | null = null
+    const step = stepByVideo ?? stepByImage ?? stepByThumb
+    if (!step) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    }
 
-    const result = await serviceSupabase.storage
-      .from('sop-videos')
-      .createSignedUrl(filePath, 3600)
-    data = result.data
-    error = result.error
+    const sopsData = step.sops
+    const sop = (Array.isArray(sopsData) ? sopsData[0] : sopsData) as { owner: string; published: boolean } | null | undefined
+    if (!sop) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    }
 
-    // Fallback: if not found at userId/filename, try filename at bucket root (legacy or different layout)
-    if (error && (error.message === 'Object not found' || error.message?.includes('not found'))) {
+    let isSuperUser = false
+    const { data: superRow } = await supabase
+      .from('super_users')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+    isSuperUser = !!superRow
+    if (process.env.SUPER_USER_ID && process.env.SUPER_USER_ID === user.id) isSuperUser = true
+
+    // Owners and super users may read draft media; published SOPs are readable by any signed-in user.
+    if (sop.owner !== user.id && !sop.published && !isSuperUser) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    let objectKey = path
+    if (!(await headObjectExists(path))) {
       const filenameOnly = path.includes('/') ? path.split('/').pop()! : path
-      if (filenameOnly && !filenameOnly.includes('..')) {
-        const rootResult = await serviceSupabase.storage
-          .from('sop-videos')
-          .createSignedUrl(filenameOnly, 3600)
-        if (rootResult.data?.signedUrl) {
-          return NextResponse.json({ url: rootResult.data.signedUrl })
-        }
+      if (filenameOnly && !filenameOnly.includes('..') && (await headObjectExists(filenameOnly))) {
+        objectKey = filenameOnly
+      } else {
+        return NextResponse.json({ error: 'Not found' }, { status: 404 })
       }
     }
 
-    if (error) {
-      const isNotFound = error.message === 'Object not found' || error.message?.includes('not found')
-      if (process.env.NODE_ENV === 'development' && !isNotFound) {
-        console.error('Error creating signed URL:', { error: error.message, path: filePath })
+    try {
+      const url = await presignGetObject(objectKey, 3600)
+      return NextResponse.json({ url })
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Error creating R2 signed URL:', { message: msg, path: objectKey })
       }
       return NextResponse.json(
-        { error: error.message || 'Failed to create signed URL' },
-        { status: isNotFound ? 404 : 500 }
-      )
-    }
-
-    if (!data?.signedUrl) {
-      return NextResponse.json(
-        { error: 'Failed to generate signed URL' },
+        { error: msg || 'Failed to create signed URL' },
         { status: 500 }
       )
     }
-
-    return NextResponse.json({ url: data.signedUrl })
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
       console.error('Error in signed-url:', error)

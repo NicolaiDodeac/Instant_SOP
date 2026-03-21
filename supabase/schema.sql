@@ -23,7 +23,7 @@ create table if not exists sop_steps (
   idx int not null,
   title text not null,
   instructions text,
-  video_path text,   -- storage path in sop-videos bucket
+  video_path text,   -- R2 object key (S3 path)
   thumbnail_path text,
   duration_ms int,
   created_at timestamptz default now(),
@@ -109,29 +109,26 @@ create index if not exists idx_sops_share_slug on sops(share_slug);
 create index if not exists idx_sop_steps_sop_id on sop_steps(sop_id);
 create index if not exists idx_step_annotations_step_id on step_annotations(step_id);
 
--- Create storage bucket for videos
-insert into storage.buckets (id, name, public)
-values ('sop-videos', 'sop-videos', false)
-on conflict (id) do nothing;
+-- Video/thumbnail/image files live in Cloudflare R2 (see app/api/videos/* and lib/r2.ts).
 
--- Storage policies for sop-videos bucket
-create policy "Users can upload their own videos" on storage.objects
-  for insert with check (
-    bucket_id = 'sop-videos' and
-    (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-create policy "Users can view their own videos" on storage.objects
-  for select using (
-    bucket_id = 'sop-videos' and
-    (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-create policy "Users can delete their own videos" on storage.objects
-  for delete using (
-    bucket_id = 'sop-videos' and
-    (storage.foldername(name))[1] = auth.uid()::text
-  );
+-- Async video processing jobs (cut with background work on Vercel)
+create table if not exists video_processing_jobs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade not null,
+  sop_id uuid references sops(id) on delete cascade not null,
+  step_id uuid references sop_steps(id) on delete cascade not null,
+  kind text not null check (kind in ('cut')),
+  status text not null default 'pending' check (status in ('pending', 'processing', 'completed', 'failed')),
+  payload jsonb not null default '{}',
+  error text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists idx_video_jobs_user on video_processing_jobs(user_id);
+create index if not exists idx_video_jobs_step on video_processing_jobs(step_id);
+alter table video_processing_jobs enable row level security;
+create policy "Users read own video jobs" on video_processing_jobs
+  for select using (user_id = auth.uid());
 
 -- Function to update updated_at timestamp
 create or replace function update_updated_at_column()

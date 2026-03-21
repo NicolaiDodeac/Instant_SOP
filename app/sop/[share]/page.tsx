@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
@@ -10,6 +10,7 @@ import StepCard from '@/components/StepCard'
 export default function PublicViewerPage() {
   const params = useParams()
   const shareSlug = params.share as string
+  const router = useRouter()
   const supabase = useSupabaseClient()
 
   const [sop, setSop] = useState<SOP | null>(null)
@@ -20,7 +21,14 @@ export default function PublicViewerPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    loadSOP()
+    void (async () => {
+      const { data } = await supabase.auth.getUser()
+      if (!data?.user) {
+        router.replace('/auth/login')
+        return
+      }
+      await loadSOP()
+    })()
   }, [shareSlug])
 
   useEffect(() => {
@@ -179,8 +187,9 @@ export default function PublicViewerPage() {
             key={step.id}
             step={step}
             annotations={annotations[step.id] || []}
-            videoUrl={step.image_path ? null : (videoUrls[step.id] || null)}
-            imageUrl={step.video_path ? null : (imageUrls[step.id] || null)}
+            // Pass both; StepPlayer prefers image when imageUrl is present.
+            videoUrl={videoUrls[step.id] || null}
+            imageUrl={imageUrls[step.id] || null}
             stepNumber={idx + 1}
             totalSteps={steps.length}
           />

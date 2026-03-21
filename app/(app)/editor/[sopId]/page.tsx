@@ -9,6 +9,7 @@ import {
   getDraft,
   deleteDraft,
   getVideoBlob,
+  saveVideoBlob,
   markVideoUploaded,
   deleteVideoBlob,
   getImageBlob,
@@ -18,6 +19,7 @@ import {
 } from '@/lib/idb'
 import { compressVideoWithMediabunny } from '@/lib/video-compress-mediabunny'
 import { generateThumbnail } from '@/lib/thumbnail'
+import { isVideoCutAsync, isVideoCutEnabled } from '@/lib/feature-flags'
 import { nanoid } from 'nanoid'
 import VideoCapture from '@/components/VideoCapture'
 
@@ -72,6 +74,9 @@ export default function EditorPage() {
   const [stepUploadProgress, setStepUploadProgress] = useState<Record<string, number>>({})
   const [stepUploadResult, setStepUploadResult] = useState<Record<string, 'compressed' | 'original' | null>>({})
   const [stepUploadSizes, setStepUploadSizes] = useState<Record<string, { before: number; after: number } | null>>({})
+  const [cutMode, setCutMode] = useState(false)
+  const [cutProgress, setCutProgress] = useState<number | null>(null)
+  const [cutError, setCutError] = useState<string | null>(null)
   const stepInstructionsRef = useRef<string>('')
   const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
   const canEdit = isOwner || isSuperUser
@@ -158,6 +163,7 @@ export default function EditorPage() {
             instructions: s.instructions,
             video_path: s.videoPath,
             thumbnail_path: s.thumbnailPath,
+            image_path: s.imagePath,
             duration_ms: s.duration_ms,
           }))
           setSteps(draftSteps)
@@ -229,12 +235,13 @@ export default function EditorPage() {
     const step = steps.find((s) => s.id === currentStepId)
     if (!step) return
 
-    if (step.video_path) {
-      setImageUrl(null)
-      loadVideoUrl(step.video_path)
-    } else if (step.image_path) {
+    // Prefer image when present (even if video_path also exists).
+    if (step.image_path) {
       setVideoUrl(null)
       loadImageUrl(step.image_path)
+    } else if (step.video_path) {
+      setImageUrl(null)
+      loadVideoUrl(step.video_path)
     } else {
       setVideoUrl(null)
       setImageUrl(null)
@@ -246,19 +253,27 @@ export default function EditorPage() {
     setStartTime(0)
     setEndTime(step.duration_ms ?? 0)
     setSelectedAnnotationId(null)
+    setCutMode(false)
+    setCutError(null)
   }, [currentStepId, steps])
 
-  // Sync TimeBar with selected annotation's times
+  // Sync TimeBar with selected annotation's times (only when not in cut mode)
   useEffect(() => {
-    if (selectedAnnotationId && currentStepId) {
-      const stepAnns = annotations[currentStepId] || []
-      const selectedAnn = stepAnns.find((ann) => ann.id === selectedAnnotationId)
-      if (selectedAnn) {
-        setStartTime(selectedAnn.t_start_ms)
-        setEndTime(selectedAnn.t_end_ms)
-      }
+    if (cutMode || !selectedAnnotationId || !currentStepId) return
+    const stepAnns = annotations[currentStepId] || []
+    const selectedAnn = stepAnns.find((ann) => ann.id === selectedAnnotationId)
+    if (selectedAnn) {
+      setStartTime(selectedAnn.t_start_ms)
+      setEndTime(selectedAnn.t_end_ms)
     }
-  }, [selectedAnnotationId, annotations, currentStepId])
+  }, [cutMode, selectedAnnotationId, annotations, currentStepId])
+
+  useEffect(() => {
+    if (!isVideoCutEnabled && cutMode) {
+      setCutMode(false)
+      setCutError(null)
+    }
+  }, [isVideoCutEnabled, cutMode])
 
   // Keep instructions ref in sync when switching steps
   useEffect(() => {
@@ -380,18 +395,26 @@ export default function EditorPage() {
     }
 
     try {
-      const res = await fetch('/api/videos/sign-upload', {
+      const imageCt = blob.type?.startsWith('image/') ? blob.type : 'image/jpeg'
+      const signRes = await fetch('/api/videos/sign-upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sopId, stepId: currentStepId, file: 'image' as const }),
+        body: JSON.stringify({
+          sopId,
+          stepId: currentStepId,
+          file: 'image' as const,
+          imageContentType: imageCt,
+        }),
       })
-      if (!res.ok) throw new Error('Failed to get image upload URL')
-      const { signedUrl, storagePath } = await res.json()
-
+      if (!signRes.ok) throw new Error('Failed to get image upload URL')
+      const { signedUrl, storagePath } = (await signRes.json()) as {
+        signedUrl: string
+        storagePath: string
+      }
       const putRes = await fetch(signedUrl, {
         method: 'PUT',
         body: blob,
-        headers: { 'Content-Type': blob.type?.startsWith('image/') ? blob.type : 'image/jpeg' },
+        headers: { 'Content-Type': imageCt },
       })
       if (!putRes.ok) throw new Error('Image upload failed')
 
@@ -409,11 +432,247 @@ export default function EditorPage() {
           .from('sop_steps')
           .update({ image_path: storagePath })
           .eq('id', currentStepId)
-        if (!error) loadSOP()
+        if (error) {
+          console.error('Failed to persist image_path to DB:', error)
+        } else {
+          loadSOP()
+        }
       }
     } catch (err) {
       console.error('Error uploading image:', err)
       loadLocalImage()
+    }
+  }
+
+  async function handleCut() {
+    if (!isVideoCutEnabled) return
+    if (!currentStepId || !currentStep || currentStep.image_path) return
+    const duration = videoDuration || currentStep.duration_ms || 0
+    if (duration <= 0 || startTime >= endTime || endTime > duration) return
+    setCutError(null)
+    setCutProgress(0)
+
+    if (isOffline) {
+      setCutError('Cut requires internet connection (server-side processing).')
+      return
+    }
+
+    const cutLen = endTime - startTime
+    const newDuration = duration - cutLen
+    const cutStartMs = startTime
+    const cutEndMs = endTime
+    const stepId = currentStepId
+    const t = currentTime
+
+    try {
+      // Server-side cut (native ffmpeg). Optional async job + poll on Vercel for long runs.
+      const res = await fetch('/api/videos/cut', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sopId,
+          stepId,
+          startMs: cutStartMs,
+          endMs: cutEndMs,
+          ...(isVideoCutAsync ? { async: true } : {}),
+        }),
+      })
+
+      if (res.status === 202) {
+        const { jobId } = (await res.json()) as { jobId: string }
+        const deadline = Date.now() + 5 * 60 * 1000
+        let lastStatus = 'pending'
+        while (Date.now() < deadline) {
+          setCutProgress(50)
+          await new Promise((r) => setTimeout(r, 600))
+          const jr = await fetch(`/api/videos/jobs/${jobId}`)
+          if (!jr.ok) continue
+          const j = (await jr.json()) as { status: string; error?: string | null }
+          lastStatus = j.status
+          if (j.status === 'completed') break
+          if (j.status === 'failed') throw new Error(j.error ?? 'Cut failed')
+        }
+        if (lastStatus !== 'completed') {
+          throw new Error('Cut timed out — try again or use a shorter clip')
+        }
+      } else if (!res.ok) {
+        const text = await res.text()
+        let msg = text
+        try {
+          const j = JSON.parse(text) as { error?: string }
+          msg = j.error ?? text
+        } catch {}
+        throw new Error(msg || `Cut failed (HTTP ${res.status})`)
+      }
+
+      setSteps((prev) =>
+        prev.map((s) => (s.id === stepId ? { ...s, duration_ms: newDuration } : s))
+      )
+      setAnnotations((prev) => {
+        const stepAnns = prev[stepId] || []
+        const updated = stepAnns
+          .filter((ann) => {
+            if (ann.t_end_ms <= cutStartMs) return true
+            if (ann.t_start_ms >= cutEndMs) return true
+            return false
+          })
+          .map((ann) => {
+            if (ann.t_start_ms >= cutEndMs) {
+              return {
+                ...ann,
+                t_start_ms: ann.t_start_ms - cutLen,
+                t_end_ms: ann.t_end_ms - cutLen,
+              }
+            }
+            return ann
+          })
+        return { ...prev, [stepId]: updated }
+      })
+      setStartTime(0)
+      setEndTime(newDuration)
+      setCutMode(false)
+      setCurrentTime(Math.min(t, cutStartMs >= t ? t : Math.max(0, t - cutLen)))
+
+      // Video is overwritten in storage at the same path; refresh URL.
+      loadVideoUrl(currentStep.video_path ?? '')
+
+      await regenerateAndUploadThumbnailFromStorage(stepId)
+    } catch (err) {
+      setCutError(err instanceof Error ? err.message : 'Cut failed')
+    } finally {
+      setCutProgress(null)
+    }
+  }
+
+  async function regenerateAndUploadThumbnailFromStorage(stepId: string) {
+    const step = steps.find((s) => s.id === stepId)
+    if (!step?.video_path) return
+    const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(step.video_path)}`)
+    if (!res.ok) return
+    const { url } = (await res.json()) as { url: string }
+    const fileRes = await fetch(url)
+    if (!fileRes.ok) return
+    const videoBlob = await fileRes.blob()
+    const thumbnailBlob = await generateThumbnail(videoBlob)
+
+    const signRes = await fetch('/api/videos/sign-upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
+    })
+    if (!signRes.ok) return
+    const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = (await signRes.json()) as {
+      signedUrl: string
+      storagePath: string
+    }
+    const putRes = await fetch(thumbSignedUrl, {
+      method: 'PUT',
+      body: thumbnailBlob,
+      headers: { 'Content-Type': 'image/jpeg' },
+    })
+    if (!putRes.ok) return
+
+    setSteps((prev) =>
+      prev.map((s) => (s.id === stepId ? { ...s, thumbnail_path: thumbnailStoragePath } : s))
+    )
+    if (!editAsDraft) {
+      await supabase
+        .from('sop_steps')
+        .update({ thumbnail_path: thumbnailStoragePath })
+        .eq('id', stepId)
+    } else {
+      setHasUnsavedChanges(true)
+    }
+  }
+
+  async function uploadTrimmedVideoWithoutCompression(blob: Blob, stepId: string, durationMs: number) {
+    if (currentStepId === stepId) {
+      loadLocalVideo()
+    }
+    setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'uploading' }))
+    setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+
+    try {
+      const thumbnailBlob = await generateThumbnail(blob)
+      const videoCt = blob.type?.startsWith('video/') ? blob.type : 'video/mp4'
+
+      const [resVideo, resThumb] = await Promise.all([
+        fetch('/api/videos/sign-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sopId,
+            stepId,
+            file: 'video' as const,
+            videoContentType: videoCt,
+          }),
+        }),
+        fetch('/api/videos/sign-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
+        }),
+      ])
+
+      if (!resVideo.ok) throw new Error('Failed to get video upload URL')
+      if (!resThumb.ok) throw new Error('Failed to get thumbnail upload URL')
+
+      const { signedUrl: videoSignedUrl, storagePath: videoStoragePath } = await resVideo.json()
+      const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = await resThumb.json()
+
+      const [videoResp, thumbResp] = await Promise.all([
+        fetch(videoSignedUrl, {
+          method: 'PUT',
+          body: blob,
+          headers: { 'Content-Type': videoCt },
+        }),
+        fetch(thumbSignedUrl, {
+          method: 'PUT',
+          body: thumbnailBlob,
+          headers: { 'Content-Type': 'image/jpeg' },
+        }),
+      ])
+      if (!videoResp.ok) throw new Error('Video upload failed')
+      if (!thumbResp.ok) throw new Error('Thumbnail upload failed')
+
+      await markVideoUploaded(stepId)
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.id === stepId
+            ? {
+                ...s,
+                video_path: videoStoragePath,
+                thumbnail_path: thumbnailStoragePath,
+                duration_ms: durationMs,
+              }
+            : s
+        )
+      )
+      loadVideoUrl(videoStoragePath)
+      if (editAsDraft) {
+        setHasUnsavedChanges(true)
+      } else {
+        const { error } = await supabase
+          .from('sop_steps')
+          .update({
+            video_path: videoStoragePath,
+            thumbnail_path: thumbnailStoragePath,
+            duration_ms: durationMs,
+          })
+          .eq('id', stepId)
+        if (!error) loadSOP()
+      }
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: null }))
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      setStepUploadResult((prev) => ({ ...prev, [stepId]: 'original' }))
+      setStepUploadSizes((prev) => ({ ...prev, [stepId]: { before: blob.size, after: blob.size } }))
+      setTimeout(() => {
+        setStepUploadResult((prev) => ({ ...prev, [stepId]: null }))
+        setStepUploadSizes((prev) => ({ ...prev, [stepId]: null }))
+      }, 5000)
+    } catch (err) {
+      console.error('Upload trimmed video failed:', err)
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'failed' }))
     }
   }
 
@@ -444,12 +703,18 @@ export default function EditorPage() {
       setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'uploading' }))
       setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
       const thumbnailBlob = await generateThumbnail(videoBlob)
+      const videoCt = videoBlob.type?.startsWith('video/') ? videoBlob.type : 'video/mp4'
 
       const [resVideo, resThumb] = await Promise.all([
         fetch('/api/videos/sign-upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sopId, stepId, file: 'video' as const }),
+          body: JSON.stringify({
+            sopId,
+            stepId,
+            file: 'video' as const,
+            videoContentType: videoCt,
+          }),
         }),
         fetch('/api/videos/sign-upload', {
           method: 'POST',
@@ -464,18 +729,18 @@ export default function EditorPage() {
       const { signedUrl: videoSignedUrl, storagePath: videoStoragePath } = await resVideo.json()
       const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = await resThumb.json()
 
-      const uploadVideoPromise = fetch(videoSignedUrl, {
-        method: 'PUT',
-        body: videoBlob,
-        headers: { 'Content-Type': videoBlob.type?.startsWith('video/') ? videoBlob.type : 'video/mp4' },
-      })
-      const uploadThumbPromise = fetch(thumbSignedUrl, {
-        method: 'PUT',
-        body: thumbnailBlob,
-        headers: { 'Content-Type': 'image/jpeg' },
-      })
-
-      const [videoResp, thumbResp] = await Promise.all([uploadVideoPromise, uploadThumbPromise])
+      const [videoResp, thumbResp] = await Promise.all([
+        fetch(videoSignedUrl, {
+          method: 'PUT',
+          body: videoBlob,
+          headers: { 'Content-Type': videoCt },
+        }),
+        fetch(thumbSignedUrl, {
+          method: 'PUT',
+          body: thumbnailBlob,
+          headers: { 'Content-Type': 'image/jpeg' },
+        }),
+      ])
       if (!videoResp.ok) throw new Error('Video upload failed')
       if (!thumbResp.ok) throw new Error('Thumbnail upload failed')
 
@@ -853,6 +1118,7 @@ style: kind === 'arrow'
         instructions: step.instructions,
         videoPath: step.video_path,
         thumbnailPath: step.thumbnail_path,
+        imagePath: step.image_path,
         duration_ms: step.duration_ms,
         annotations: annotations[step.id] || [],
       })),
@@ -876,6 +1142,7 @@ style: kind === 'arrow'
           instructions: s.instructions ?? null,
           video_path: s.video_path ?? null,
           thumbnail_path: s.thumbnail_path ?? null,
+          image_path: s.image_path ?? null,
           duration_ms: s.duration_ms ?? null,
         })),
         annotations: Object.fromEntries(
@@ -1151,8 +1418,9 @@ style: kind === 'arrow'
             <div className="space-y-1">
               <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
                 <StepPlayer
-                  videoUrl={currentStep.image_path ? null : videoUrl}
-                  imageUrl={currentStep.video_path ? null : imageUrl}
+                  // Pass both; StepPlayer prefers image when imageUrl is present.
+                  videoUrl={videoUrl}
+                  imageUrl={imageUrl}
                   annotations={currentAnnotations}
                   currentTime={currentTime}
                   startTime={startTime}
@@ -1170,20 +1438,63 @@ style: kind === 'arrow'
               </div>
               {!currentStep.image_path && (
                 <>
+                {isVideoCutEnabled && (
+                <>
+                {/* Cut mode: scissors toggles timeline for selecting segment to remove; Cut removes it */}
+                <div className="flex flex-wrap items-center gap-2 py-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (cutMode) {
+                        setCutMode(false)
+                        setCutError(null)
+                      } else {
+                        const dur = videoDuration || currentStep.duration_ms || 0
+                        setCutMode(true)
+                        setCutError(null)
+                        setStartTime(currentTime)
+                        setEndTime(Math.min(currentTime + 2000, dur))
+                        setTimelineDragMode('seek')
+                      }
+                    }}
+                    className={`p-2 rounded-lg touch-target transition-colors ${
+                      cutMode
+                        ? 'bg-amber-500 text-white ring-2 ring-amber-400 ring-offset-2'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                    }`}
+                    title={cutMode ? 'Exit cut mode' : 'Set range to cut from video'}
+                    aria-label={cutMode ? 'Exit cut mode' : 'Cut video'}
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 9l6 6 4-4M4 4l4 4M20 20l-4-4M6 9a3 3 0 100-6 3 3 0 000 6zM18 15a3 3 0 100-6 3 3 0 000 6z" />
+                    </svg>
+                  </button>
+                  {cutMode && (
+                    <span className="text-sm text-amber-700 dark:text-amber-300 font-medium">
+                      Select range to remove, then press Cut
+                    </span>
+                  )}
+                </div>
+                </>
+                )}
                 <TimeBar
                   duration={videoDuration || currentStep.duration_ms || 0}
                   currentTime={currentTime}
                   startTime={startTime}
                   endTime={endTime}
                   onStartTimeChange={(time) => {
-                    if (selectedAnnotationId) {
+                    if (isVideoCutEnabled && cutMode) {
+                      setStartTime(time)
+                    } else if (selectedAnnotationId) {
                       handleAnnotationUpdate(selectedAnnotationId, { t_start_ms: time })
                     } else {
                       setStartTime(time)
                     }
                   }}
                   onEndTimeChange={(time) => {
-                    if (selectedAnnotationId) {
+                    if (isVideoCutEnabled && cutMode) {
+                      setEndTime(time)
+                    } else if (selectedAnnotationId) {
                       handleAnnotationUpdate(selectedAnnotationId, { t_end_ms: time })
                     } else {
                       setEndTime(time)
@@ -1192,16 +1503,41 @@ style: kind === 'arrow'
                   onSeek={setCurrentTime}
                   dragMode={timelineDragMode}
                   onDragModeChange={setTimelineDragMode}
-                  disabled={!canEdit || !selectedAnnotationId}
+                  disabled={!canEdit || ((!(isVideoCutEnabled && cutMode)) && !selectedAnnotationId)}
                   selectionHint={
-                    selectedAnnotationId
-                      ? (() => {
-                          const ann = (currentAnnotations || []).find((a) => a.id === selectedAnnotationId)
-                          return ann ? `Editing selected ${ann.kind}` : undefined
-                        })()
-                      : undefined
+                    isVideoCutEnabled && cutMode
+                      ? 'Range to remove from video'
+                      : selectedAnnotationId
+                        ? (() => {
+                            const ann = (currentAnnotations || []).find((a) => a.id === selectedAnnotationId)
+                            return ann ? `Editing selected ${ann.kind}` : undefined
+                          })()
+                        : undefined
                   }
                 />
+                {isVideoCutEnabled && cutMode && (
+                  <div className="flex flex-wrap items-center gap-2 py-1.5">
+                    <button
+                      type="button"
+                      onClick={handleCut}
+                      disabled={cutProgress !== null || startTime >= endTime}
+                      className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold touch-target"
+                    >
+                      {cutProgress !== null ? `Cutting… ${cutProgress}%` : 'Cut'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setCutMode(false); setCutError(null) }}
+                      disabled={cutProgress !== null}
+                      className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-medium touch-target disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    {cutError && (
+                      <span className="text-sm text-red-600 dark:text-red-400">{cutError}</span>
+                    )}
+                  </div>
+                )}
               {currentStepId && canEdit && (() => {
                 const status = stepUploadStatus[currentStepId]
                 const progress = stepUploadProgress[currentStepId] ?? 0

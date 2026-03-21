@@ -77,16 +77,10 @@ npm install
 6. Click **Run** (or press Ctrl+Enter)
 7. Verify success message
 
-#### Step 2.3: Verify Storage Bucket
-1. Go to **Storage** in Supabase dashboard
-2. Check that `sop-videos` bucket exists
-3. If it doesn't exist, the schema should have created it, but you can manually create:
-   - Click "New bucket"
-   - Name: `sop-videos`
-   - Public: **No** (unchecked)
-   - Click "Create bucket"
+#### Step 2.3: Cloudflare R2 (videos / thumbnails / images)
+Media files are **not** in Supabase Storage. Create an R2 bucket, API token (**Object Read & Write**), and CORS for your app origin. See **`ENV_SETUP.md`** (Cloudflare R2 section).
 
-#### Step 2.4: Get API Keys
+#### Step 2.4: Get Supabase API Keys
 1. Go to **Settings** → **API**
 2. Copy these values:
    - **Project URL** (under "Project URL")
@@ -105,13 +99,20 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 SUPER_USER_ID=your-user-uuid-here
 # For production (e.g. Vercel): your app URL so OAuth redirects to the deployed app, not localhost.
 # NEXT_PUBLIC_APP_URL=https://your-app.vercel.app
+
+# Cloudflare R2 (see ENV_SETUP.md)
+# R2_ACCESS_KEY_ID=
+# R2_SECRET_ACCESS_KEY=
+# R2_BUCKET_NAME=
+# R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+# R2_REGION=auto
 ```
 
-**Replace the values** with what you copied from Supabase. For `SUPER_USER_ID`, use your own user UUID from **Authentication → Users** in Supabase. Only that user can open **Manage editors** (admin cabinet) to add or remove who can create SOPs. If you also want to create SOPs yourself, add your own email in that cabinet so you appear in the editors list.
+**Replace the values** with what you copied from Supabase and Cloudflare. For `SUPER_USER_ID`, use your own user UUID from **Authentication → Users** in Supabase. Only that user can open **Manage editors** (admin cabinet) to add or remove who can create SOPs. If you also want to create SOPs yourself, add your own email in that cabinet so you appear in the editors list.
 
 ⚠️ **IMPORTANT**: 
 - Never commit `.env.local` to git (it's already in `.gitignore`)
-- Never expose `SUPABASE_SERVICE_ROLE_KEY` to the client
+- Never expose `SUPABASE_SERVICE_ROLE_KEY` or `R2_*` secrets to the client
 - The service role key bypasses RLS - keep it secure!
 
 ### 4. Create PWA Icons (5-10 minutes)
@@ -190,11 +191,11 @@ Camera access requires HTTPS in production. For testing:
 - Check `.env.local` exists and has correct values
 - Restart dev server after creating `.env.local`
 
-### Issue: "Storage bucket not found"
+### Issue: "Missing R2 env" or upload / playback fails
 **Solution**: 
-- Go to Supabase Storage
-- Manually create `sop-videos` bucket if schema didn't create it
-- Set it to **private** (not public)
+- Fill all `R2_*` variables in `.env.local` (see `ENV_SETUP.md`)
+- R2 bucket **CORS** must allow your app origin (`http://localhost:3000`, production URL)
+- Restart the dev server after changing env vars
 
 ### Issue: "Camera not working on mobile"
 **Solution**:
@@ -274,7 +275,7 @@ Before considering setup complete, verify:
 - [ ] Dependencies installed (`pnpm install` completed)
 - [ ] Supabase project created
 - [ ] Database schema executed successfully
-- [ ] Storage bucket `sop-videos` exists
+- [ ] Cloudflare R2 bucket + API token + `R2_*` env vars configured
 - [ ] `.env.local` file created with correct keys
 - [ ] PWA icons created and placed in `public/`
 - [ ] Dev server starts without errors

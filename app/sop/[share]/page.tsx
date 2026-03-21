@@ -7,6 +7,7 @@ import { useSupabaseClient } from '@/lib/supabase/client'
 import { getSharePageUrl } from '@/lib/public-site-url'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
 import StepCard from '@/components/StepCard'
+import { PwaInstallCard } from '@/components/PwaInstallCard'
 
 export default function PublicViewerPage() {
   const params = useParams()
@@ -286,9 +287,8 @@ export default function PublicViewerPage() {
         ) : null}
       </div>
 
-      {/* Install prompt (Android: Add to Home screen / Install app) */}
-      <div className="p-4 pb-8 text-center text-sm text-gray-600 dark:text-gray-400 safe-bottom">
-        <p>Add to Home Screen for offline access</p>
+      <div className="px-4 pb-8 max-w-lg mx-auto w-full safe-bottom">
+        <PwaInstallCard />
       </div>
     </div>
   )

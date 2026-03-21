@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP } from '@/lib/types'
+import { PwaInstallCard } from '@/components/PwaInstallCard'
 
 export default function DashboardPage() {
   const [sops, setSops] = useState<SOP[]>([])
@@ -83,6 +84,8 @@ export default function DashboardPage() {
       </div>
 
       <div className="p-4 space-y-4">
+        <PwaInstallCard />
+
         {isEditor && (
           <Link
             href="/editor"

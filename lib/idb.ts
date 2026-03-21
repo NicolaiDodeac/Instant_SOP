@@ -1,5 +1,5 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb'
-import type { DraftSOP, DraftStep } from './types'
+import type { DraftSOP } from './types'
 
 interface SOPDB extends DBSchema {
   drafts: {
@@ -24,16 +24,23 @@ function getDB() {
     dbPromise = openDB<SOPDB>('sop-builder', 3, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
-          const draftStore = db.createObjectStore('drafts', {
-            keyPath: 'id',
-          })
-          draftStore.createIndex('by-lastModified', 'lastModified')
-          db.createObjectStore('videos', { keyPath: 'stepId' })
+          if (!db.objectStoreNames.contains('drafts')) {
+            const draftStore = db.createObjectStore('drafts', {
+              keyPath: 'id',
+            })
+            draftStore.createIndex('by-lastModified', 'lastModified')
+          }
+          if (!db.objectStoreNames.contains('videos')) {
+            db.createObjectStore('videos', { keyPath: 'stepId' })
+          }
         }
-        if (oldVersion < 3) {
+        if (oldVersion < 3 && !db.objectStoreNames.contains('images')) {
           db.createObjectStore('images', { keyPath: 'stepId' })
         }
       },
+    }).catch((err) => {
+      dbPromise = null
+      throw err
     })
   }
   return dbPromise

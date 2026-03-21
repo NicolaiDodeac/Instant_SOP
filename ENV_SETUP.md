@@ -150,6 +150,9 @@ After restarting, check:
 5. Get keys from Settings → API
 6. Run the database schema from `supabase/schema.sql`
 
+### Issue: IndexedDB errors on phone / “upgradeneeded” / installed PWA
+Drafts and captured video/image blobs use **IndexedDB** (`lib/idb.ts`). **Chrome + “Add to Home Screen”** can run the app as an **installed PWA** with its own profile; you may have **separate storage** from the same site opened only in a tab. If migrations fail once, clear **site data** for that origin (or uninstall the PWA and reinstall after deploy). The app resets the DB open promise on failure so the next open can retry.
+
 ## File Location
 
 Your project structure should look like this:

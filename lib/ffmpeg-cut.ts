@@ -102,3 +102,125 @@ export async function ffmpegCutSegment(inputBuffer: Buffer, startMs: number, end
   await rm(dir, { recursive: true, force: true })
   return outBuffer
 }
+
+async function getVideoDurationSec(bin: string, inPath: string): Promise<number> {
+  let stderr = ''
+  try {
+    await execFileAsync(bin, ['-hide_banner', '-i', inPath], { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 })
+  } catch (e: unknown) {
+    const err = e as { stderr?: string | Buffer }
+    if (typeof err.stderr === 'string') stderr = err.stderr
+    else if (Buffer.isBuffer(err.stderr)) stderr = err.stderr.toString('utf8')
+  }
+  const m = /Duration:\s*(\d{2}):(\d{2}):(\d{2}\.\d{2})/.exec(stderr)
+  if (!m) throw new Error('Could not read video duration')
+  const h = parseInt(m[1], 10)
+  const min = parseInt(m[2], 10)
+  const sec = parseFloat(m[3])
+  return h * 3600 + min * 60 + sec
+}
+
+/**
+ * Speed up only [startMs, endMs) by `speed` (>1), concat with head and tail unchanged. No audio.
+ */
+export async function ffmpegSpeedSegment(
+  inputBuffer: Buffer,
+  startMs: number,
+  endMs: number,
+  speed: number
+): Promise<Buffer> {
+  if (!(startMs >= 0) || !(endMs > startMs)) {
+    throw new Error('Invalid speed range')
+  }
+  if (!(speed > 1) || speed > 16 || !Number.isFinite(speed)) {
+    throw new Error('Speed factor must be between 1 and 16')
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), 'instant-sop-speed-'))
+  const inPath = join(dir, 'in.mp4')
+  const outPath = join(dir, 'out.mp4')
+  await writeFile(inPath, inputBuffer)
+
+  const bin = resolveFfmpegBinary()
+  const durationSec = await getVideoDurationSec(bin, inPath)
+  const startSec = startMs / 1000
+  const endSec = endMs / 1000
+  if (startSec >= durationSec - 1e-3) {
+    await rm(dir, { recursive: true, force: true })
+    throw new Error('Range starts at or after end of video')
+  }
+  const endClamped = Math.min(endSec, durationSec)
+
+  let filter: string
+  const s = speed
+
+  const hasHead = startSec > 1e-6
+  const hasTail = endClamped < durationSec - 1e-3
+
+  if (!hasHead && !hasTail) {
+    filter = `[0:v]setpts=PTS/${s}[outv]`
+  } else {
+    const parts: string[] = []
+    const labels: string[] = []
+    let i = 0
+    if (hasHead) {
+      parts.push(`[0:v]trim=start=0:end=${startSec},setpts=PTS-STARTPTS[v${i}]`)
+      labels.push(`[v${i}]`)
+      i++
+    }
+    parts.push(
+      `[0:v]trim=start=${startSec}:end=${endClamped},setpts=(PTS-STARTPTS)/${s}[v${i}]`
+    )
+    labels.push(`[v${i}]`)
+    i++
+    if (hasTail) {
+      parts.push(`[0:v]trim=start=${endClamped},setpts=PTS-STARTPTS[v${i}]`)
+      labels.push(`[v${i}]`)
+      i++
+    }
+    parts.push(`${labels.join('')}concat=n=${labels.length}:v=1[outv]`)
+    filter = parts.join(';')
+  }
+
+  try {
+    await execFileAsync(bin, [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      inPath,
+      '-filter_complex',
+      filter,
+      '-map',
+      '[outv]',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '28',
+      '-pix_fmt',
+      'yuv420p',
+      '-an',
+      '-y',
+      outPath,
+    ])
+  } catch (err) {
+    const anyErr = err as { message?: unknown; stderr?: unknown }
+    const message =
+      [typeof anyErr?.message === 'string' ? anyErr.message : null, anyErr?.stderr ? String(anyErr.stderr) : null]
+        .filter(Boolean)
+        .join('\n') || 'ffmpeg failed'
+    await rm(dir, { recursive: true, force: true })
+    if (message.includes('ENOENT') || message.toLowerCase().includes('not found')) {
+      throw new Error(
+        'ffmpeg binary not found on server. Deploy on a host with ffmpeg or use ffmpeg-static.'
+      )
+    }
+    throw new Error(message)
+  }
+
+  const outBuffer = await readFile(outPath)
+  await rm(dir, { recursive: true, force: true })
+  return outBuffer
+}

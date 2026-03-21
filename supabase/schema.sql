@@ -117,7 +117,7 @@ create table if not exists video_processing_jobs (
   user_id uuid references auth.users(id) on delete cascade not null,
   sop_id uuid references sops(id) on delete cascade not null,
   step_id uuid references sop_steps(id) on delete cascade not null,
-  kind text not null check (kind in ('cut')),
+  kind text not null check (kind in ('cut', 'speed')),
   status text not null default 'pending' check (status in ('pending', 'processing', 'completed', 'failed')),
   payload jsonb not null default '{}',
   error text,

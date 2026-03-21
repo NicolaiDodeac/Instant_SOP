@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import { getObjectBytes, putObjectBytes } from '@/lib/r2'
-import { ffmpegCutSegment } from '@/lib/ffmpeg-cut'
+import { ffmpegSpeedSegment } from '@/lib/ffmpeg-cut'
 import { runVideoProcessingJob } from '@/lib/video-job-runner'
 import { waitUntil } from '@vercel/functions'
 
@@ -11,7 +11,10 @@ export const maxDuration = 300
 export async function POST(request: NextRequest) {
   if (process.env.NEXT_PUBLIC_ENABLE_VIDEO_CUT !== 'true') {
     return NextResponse.json(
-      { error: 'Video cut is disabled. Set NEXT_PUBLIC_ENABLE_VIDEO_CUT=true when your host supports it.' },
+      {
+        error:
+          'Video processing is disabled. Set NEXT_PUBLIC_ENABLE_VIDEO_CUT=true when your host supports ffmpeg.',
+      },
       { status: 503 }
     )
   }
@@ -32,7 +35,7 @@ export async function POST(request: NextRequest) {
       stepId?: string
       startMs?: number
       endMs?: number
-      /** When true, enqueue job and return 202; processing runs in background on Vercel (waitUntil). */
+      speedFactor?: number
       async?: boolean
     }
 
@@ -40,13 +43,17 @@ export async function POST(request: NextRequest) {
     const stepId = body.stepId
     const startMs = body.startMs
     const endMs = body.endMs
+    const speedFactor = body.speedFactor
     const useAsync = body.async === true
 
     if (!sopId || !stepId || typeof startMs !== 'number' || typeof endMs !== 'number') {
       return NextResponse.json({ error: 'Missing sopId, stepId, startMs, or endMs' }, { status: 400 })
     }
     if (!(startMs >= 0) || !(endMs > startMs)) {
-      return NextResponse.json({ error: 'Invalid cut range' }, { status: 400 })
+      return NextResponse.json({ error: 'Invalid range' }, { status: 400 })
+    }
+    if (typeof speedFactor !== 'number' || !(speedFactor > 1) || speedFactor > 16) {
+      return NextResponse.json({ error: 'speedFactor must be 1–16 (exclusive of 1)' }, { status: 400 })
     }
 
     const { data: step, error: stepErr } = await supabase
@@ -92,22 +99,21 @@ export async function POST(request: NextRequest) {
           user_id: user.id,
           sop_id: sopId,
           step_id: stepId,
-          kind: 'cut',
+          kind: 'speed',
           status: 'pending',
-          payload: { startMs, endMs },
+          payload: { startMs, endMs, speedFactor },
         })
         .select('id')
         .single()
 
       if (jobErr || !job) {
-        console.error('Failed to create video job:', jobErr)
+        console.error('Failed to create speed job:', jobErr)
         return NextResponse.json({ error: jobErr?.message ?? 'Failed to create job' }, { status: 500 })
       }
 
       const jobId = job.id as string
       const work = runVideoProcessingJob(jobId)
 
-      // On Vercel, extend the function lifetime so large ffmpeg runs can finish after the response.
       if (process.env.VERCEL) {
         waitUntil(work)
         return NextResponse.json({ jobId, status: 'pending' }, { status: 202 })
@@ -120,15 +126,11 @@ export async function POST(request: NextRequest) {
           .select('error')
           .eq('id', jobId)
           .maybeSingle()
-        return NextResponse.json(
-          { error: row?.error ?? 'Cut failed' },
-          { status: 500 }
-        )
+        return NextResponse.json({ error: row?.error ?? 'Speed failed' }, { status: 500 })
       }
       return NextResponse.json({ ok: true, jobId, status: 'completed' })
     }
 
-    // Synchronous path (same process, no job row)
     let inputBuffer: Buffer
     try {
       inputBuffer = await getObjectBytes(step.video_path)
@@ -138,7 +140,7 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      const outBuffer = await ffmpegCutSegment(inputBuffer, startMs, endMs)
+      const outBuffer = await ffmpegSpeedSegment(inputBuffer, startMs, endMs, speedFactor)
       await putObjectBytes(step.video_path, outBuffer, 'video/mp4')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -156,7 +158,7 @@ export async function POST(request: NextRequest) {
             stack: typeof err?.stack === 'string' ? err.stack : undefined,
           }
         : undefined
-    console.error('Error in /api/videos/cut:', details ?? error)
+    console.error('Error in /api/videos/speed:', details ?? error)
     return NextResponse.json(
       { error: details?.message ?? 'Internal server error', details },
       { status: 500 }

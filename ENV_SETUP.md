@@ -115,6 +115,8 @@ If uploads show **Failed to fetch** or **blocked by CORS policy** / **No 'Access
 
 **Video cut on Vercel:** Serverless bundles must include the `ffmpeg-static` binary. This project sets `outputFileTracingIncludes` and `outputFileTracingRoot` in `next.config.js` so the cut route ships the binary. If you still see “ffmpeg binary not found”, redeploy after pulling latest; if ffmpeg runs but fails, check **Vercel logs** for **memory** or **timeout** on large files.
 
+**Segment speed-up (editor):** Speeding up a **range** of the clip uses `POST /api/videos/speed` (same env flag as cut). Run migration `supabase/migrations/20260323100000_video_jobs_speed_kind.sql` so `video_processing_jobs.kind` allows `'speed'` (async jobs). `next.config.js` includes `/api/videos/speed` in `outputFileTracingIncludes` for ffmpeg.
+
 ## Verify Setup
 
 After restarting, check:

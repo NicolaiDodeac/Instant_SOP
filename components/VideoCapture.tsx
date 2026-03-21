@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { saveVideoBlob, saveImageBlob } from '@/lib/idb'
+import ImageCropModal from '@/components/ImageCropModal'
 
 interface VideoCaptureProps {
   stepId: string
@@ -29,6 +30,7 @@ export default function VideoCapture({
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const galleryInputRef = useRef<HTMLInputElement>(null)
+  const [imageCrop, setImageCrop] = useState<{ url: string; mime: string } | null>(null)
 
   useEffect(() => {
     return () => {
@@ -129,14 +131,8 @@ export default function VideoCapture({
 
     const isImage = file.type.startsWith('image/')
     if (isImage && onImageCaptured) {
-      try {
-        await saveImageBlob(stepId, sopId, file)
-        onImageCaptured(file)
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : 'Failed to load image'
-        )
-      }
+      const url = URL.createObjectURL(file)
+      setImageCrop({ url, mime: file.type || 'image/jpeg' })
       return
     }
 
@@ -167,6 +163,26 @@ export default function VideoCapture({
 
   return (
     <div className="space-y-4">
+      {imageCrop && (
+        <ImageCropModal
+          imageSrc={imageCrop.url}
+          sourceMime={imageCrop.mime}
+          onCancel={() => {
+            URL.revokeObjectURL(imageCrop.url)
+            setImageCrop(null)
+          }}
+          onComplete={async (blob) => {
+            URL.revokeObjectURL(imageCrop.url)
+            setImageCrop(null)
+            try {
+              await saveImageBlob(stepId, sopId, blob)
+              onImageCaptured?.(blob)
+            } catch (err) {
+              setError(err instanceof Error ? err.message : 'Failed to save image')
+            }
+          }}
+        />
+      )}
       {error && (
         <div className="p-3 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded-lg text-sm">
           {error}

@@ -25,6 +25,8 @@ interface StepPlayerProps {
   showAnnotationsOnlyInTimeRange?: boolean
   /** Filter by time AND disable drag/rotate (viewer mode). Defaults to showControls when undefined. */
   filterAnnotationsByTime?: boolean
+  /** Preview playback speed (HTML5 video; typically 0.25–16; ignored in image mode). */
+  playbackRate?: number
 }
 
 const IMAGE_NOMINAL_DURATION_MS = 1000
@@ -47,6 +49,7 @@ export default function StepPlayer({
   autoPlay = false,
   showAnnotationsOnlyInTimeRange,
   filterAnnotationsByTime,
+  playbackRate = 1,
 }: StepPlayerProps) {
   const isImageMode = !!imageUrl
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
@@ -166,6 +169,18 @@ export default function StepPlayer({
       video.removeEventListener('loadedmetadata', handleLoadedMetadata)
     }
   }, [onTimeUpdate, onDurationUpdate, videoUrl, isImageMode])
+
+  useEffect(() => {
+    if (isImageMode) return
+    const video = videoRef.current
+    if (!video) return
+    const r = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1
+    try {
+      video.playbackRate = Math.min(16, Math.max(0.0625, r))
+    } catch {
+      video.playbackRate = 1
+    }
+  }, [playbackRate, videoUrl, isImageMode])
 
   // Handle external seek (video only)
   useEffect(() => {

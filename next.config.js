@@ -10,6 +10,7 @@ const nextConfig = {
   // Vercel serverless traces omit the native binary unless we include it explicitly.
   outputFileTracingIncludes: {
     '/api/videos/cut': ['./node_modules/ffmpeg-static/**/*'],
+    '/api/videos/speed': ['./node_modules/ffmpeg-static/**/*'],
   },
 };
 

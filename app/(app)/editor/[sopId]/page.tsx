@@ -44,6 +44,12 @@ import TimeBar, { type TimelineDragMode } from '@/components/TimeBar'
 import AnnotToolbar from '@/components/AnnotToolbar'
 import StepPlayer from '@/components/StepPlayer'
 
+/** Editor-only preview; does not change exported video file. */
+const VIDEO_PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4, 8] as const
+
+/** Server-side segment speed-up (ffmpeg); encoded into the file. */
+const SEGMENT_SPEED_FACTORS = [2, 3, 4, 8] as const
+
 export default function EditorPage() {
   const params = useParams()
   const sopId = params.sopId as string
@@ -77,6 +83,11 @@ export default function EditorPage() {
   const [cutMode, setCutMode] = useState(false)
   const [cutProgress, setCutProgress] = useState<number | null>(null)
   const [cutError, setCutError] = useState<string | null>(null)
+  const [speedMode, setSpeedMode] = useState(false)
+  const [speedFactor, setSpeedFactor] = useState(2)
+  const [speedProgress, setSpeedProgress] = useState<number | null>(null)
+  const [speedError, setSpeedError] = useState<string | null>(null)
+  const [playbackRate, setPlaybackRate] = useState(1)
   const stepInstructionsRef = useRef<string>('')
   const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
   const canEdit = isOwner || isSuperUser
@@ -273,7 +284,11 @@ export default function EditorPage() {
       setCutMode(false)
       setCutError(null)
     }
-  }, [isVideoCutEnabled, cutMode])
+    if (!isVideoCutEnabled && speedMode) {
+      setSpeedMode(false)
+      setSpeedError(null)
+    }
+  }, [isVideoCutEnabled, cutMode, speedMode])
 
   // Keep instructions ref in sync when switching steps
   useEffect(() => {
@@ -282,6 +297,10 @@ export default function EditorPage() {
       stepInstructionsRef.current = step?.instructions ?? ''
     }
   }, [currentStepId, steps])
+
+  useEffect(() => {
+    setPlaybackRate(1)
+  }, [currentStepId])
 
   // Save draft when annotations (or other draft data) change, so we always persist latest state
   useEffect(() => {
@@ -541,6 +560,116 @@ export default function EditorPage() {
       setCutError(err instanceof Error ? err.message : 'Cut failed')
     } finally {
       setCutProgress(null)
+    }
+  }
+
+  async function handleSpeedSegment() {
+    if (!isVideoCutEnabled) return
+    if (!currentStepId || !currentStep || currentStep.image_path) return
+    const duration = videoDuration || currentStep.duration_ms || 0
+    if (duration <= 0 || startTime >= endTime || endTime > duration) return
+    setSpeedError(null)
+    setSpeedProgress(0)
+
+    if (isOffline) {
+      setSpeedError('Speed change requires internet (server-side processing).')
+      setSpeedProgress(null)
+      return
+    }
+
+    const t0 = startTime
+    const t1 = endTime
+    const L = t1 - t0
+    const S = speedFactor
+    const delta = L - L / S
+    const newDuration = duration - delta
+    const stepId = currentStepId
+    const t = currentTime
+
+    try {
+      const res = await fetch('/api/videos/speed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sopId,
+          stepId,
+          startMs: t0,
+          endMs: t1,
+          speedFactor: S,
+          ...(isVideoCutAsync ? { async: true } : {}),
+        }),
+      })
+
+      if (res.status === 202) {
+        const { jobId } = (await res.json()) as { jobId: string }
+        const deadline = Date.now() + 5 * 60 * 1000
+        let lastStatus = 'pending'
+        while (Date.now() < deadline) {
+          setSpeedProgress(50)
+          await new Promise((r) => setTimeout(r, 600))
+          const jr = await fetch(`/api/videos/jobs/${jobId}`)
+          if (!jr.ok) continue
+          const j = (await jr.json()) as { status: string; error?: string | null }
+          lastStatus = j.status
+          if (j.status === 'completed') break
+          if (j.status === 'failed') throw new Error(j.error ?? 'Speed change failed')
+        }
+        if (lastStatus !== 'completed') {
+          throw new Error('Timed out — try again or use a shorter segment')
+        }
+      } else if (!res.ok) {
+        const text = await res.text()
+        let msg = text
+        try {
+          const j = JSON.parse(text) as { error?: string }
+          msg = j.error ?? text
+        } catch {}
+        throw new Error(msg || `Failed (HTTP ${res.status})`)
+      }
+
+      setSteps((prev) =>
+        prev.map((s) => (s.id === stepId ? { ...s, duration_ms: newDuration } : s))
+      )
+      setAnnotations((prev) => {
+        const stepAnns = prev[stepId] || []
+        const updated = stepAnns
+          .map((ann) => {
+            if (ann.t_end_ms <= t0) return ann
+            if (ann.t_start_ms >= t1) {
+              return {
+                ...ann,
+                t_start_ms: ann.t_start_ms - delta,
+                t_end_ms: ann.t_end_ms - delta,
+              }
+            }
+            if (ann.t_start_ms >= t0 && ann.t_end_ms <= t1) {
+              return {
+                ...ann,
+                t_start_ms: t0 + (ann.t_start_ms - t0) / S,
+                t_end_ms: t0 + (ann.t_end_ms - t0) / S,
+              }
+            }
+            return null
+          })
+          .filter((a): a is StepAnnotation => a !== null)
+        return { ...prev, [stepId]: updated }
+      })
+      setStartTime(0)
+      setEndTime(newDuration)
+      setSpeedMode(false)
+      {
+        let nt = t
+        if (t >= t1) nt = t - delta
+        else if (t > t0) nt = t0 + (t - t0) / S
+        setCurrentTime(Math.min(Math.max(0, nt), newDuration))
+      }
+
+      loadVideoUrl(currentStep.video_path ?? '')
+      await regenerateAndUploadThumbnailFromStorage(stepId)
+    } catch (err) {
+      setSpeedError(err instanceof Error ? err.message : 'Speed change failed')
+    } finally {
+      setSpeedProgress(null)
     }
   }
 
@@ -1434,8 +1563,30 @@ style: kind === 'arrow'
                   showControls={false}
                   seekTime={currentTime}
                   filterAnnotationsByTime={!canEdit}
+                  playbackRate={playbackRate}
                 />
               </div>
+              {!currentStep.image_path && (videoUrl || currentStep.video_path) && (
+                <div className="flex flex-wrap items-center gap-2 py-1 px-0.5">
+                  <span className="text-xs text-gray-600 dark:text-gray-400 shrink-0">Preview speed</span>
+                  <div className="flex flex-wrap gap-1">
+                    {VIDEO_PREVIEW_SPEEDS.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => setPlaybackRate(s)}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold touch-target min-w-[40px] ${
+                          playbackRate === s
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
+                        }`}
+                      >
+                        {s === 1 ? '1×' : `${s}×`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {!currentStep.image_path && (
                 <>
                 {isVideoCutEnabled && (
@@ -1450,6 +1601,8 @@ style: kind === 'arrow'
                         setCutError(null)
                       } else {
                         const dur = videoDuration || currentStep.duration_ms || 0
+                        setSpeedMode(false)
+                        setSpeedError(null)
                         setCutMode(true)
                         setCutError(null)
                         setStartTime(currentTime)
@@ -1474,6 +1627,40 @@ style: kind === 'arrow'
                       Select range to remove, then press Cut
                     </span>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (speedMode) {
+                        setSpeedMode(false)
+                        setSpeedError(null)
+                      } else {
+                        const dur = videoDuration || currentStep.duration_ms || 0
+                        setCutMode(false)
+                        setCutError(null)
+                        setSpeedMode(true)
+                        setSpeedError(null)
+                        setStartTime(currentTime)
+                        setEndTime(Math.min(currentTime + 2000, dur))
+                        setTimelineDragMode('seek')
+                      }
+                    }}
+                    className={`p-2 rounded-lg touch-target transition-colors ${
+                      speedMode
+                        ? 'bg-violet-500 text-white ring-2 ring-violet-400 ring-offset-2'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                    }`}
+                    title={speedMode ? 'Exit speed mode' : 'Speed up a segment'}
+                    aria-label={speedMode ? 'Exit speed mode' : 'Speed up segment'}
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                  </button>
+                  {speedMode && (
+                    <span className="text-sm text-violet-700 dark:text-violet-300 font-medium">
+                      Select range, pick factor, Apply
+                    </span>
+                  )}
                 </div>
                 </>
                 )}
@@ -1483,7 +1670,7 @@ style: kind === 'arrow'
                   startTime={startTime}
                   endTime={endTime}
                   onStartTimeChange={(time) => {
-                    if (isVideoCutEnabled && cutMode) {
+                    if (isVideoCutEnabled && (cutMode || speedMode)) {
                       setStartTime(time)
                     } else if (selectedAnnotationId) {
                       handleAnnotationUpdate(selectedAnnotationId, { t_start_ms: time })
@@ -1492,7 +1679,7 @@ style: kind === 'arrow'
                     }
                   }}
                   onEndTimeChange={(time) => {
-                    if (isVideoCutEnabled && cutMode) {
+                    if (isVideoCutEnabled && (cutMode || speedMode)) {
                       setEndTime(time)
                     } else if (selectedAnnotationId) {
                       handleAnnotationUpdate(selectedAnnotationId, { t_end_ms: time })
@@ -1503,11 +1690,13 @@ style: kind === 'arrow'
                   onSeek={setCurrentTime}
                   dragMode={timelineDragMode}
                   onDragModeChange={setTimelineDragMode}
-                  disabled={!canEdit || ((!(isVideoCutEnabled && cutMode)) && !selectedAnnotationId)}
+                  disabled={!canEdit || ((!(isVideoCutEnabled && (cutMode || speedMode))) && !selectedAnnotationId)}
                   selectionHint={
                     isVideoCutEnabled && cutMode
                       ? 'Range to remove from video'
-                      : selectedAnnotationId
+                      : isVideoCutEnabled && speedMode
+                        ? 'Range to speed up (encoded)'
+                        : selectedAnnotationId
                         ? (() => {
                             const ann = (currentAnnotations || []).find((a) => a.id === selectedAnnotationId)
                             return ann ? `Editing selected ${ann.kind}` : undefined
@@ -1520,7 +1709,7 @@ style: kind === 'arrow'
                     <button
                       type="button"
                       onClick={handleCut}
-                      disabled={cutProgress !== null || startTime >= endTime}
+                      disabled={cutProgress !== null || speedProgress !== null || startTime >= endTime}
                       className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold touch-target"
                     >
                       {cutProgress !== null ? `Cutting… ${cutProgress}%` : 'Cut'}
@@ -1528,7 +1717,7 @@ style: kind === 'arrow'
                     <button
                       type="button"
                       onClick={() => { setCutMode(false); setCutError(null) }}
-                      disabled={cutProgress !== null}
+                      disabled={cutProgress !== null || speedProgress !== null}
                       className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-medium touch-target disabled:opacity-50"
                     >
                       Cancel
@@ -1536,6 +1725,50 @@ style: kind === 'arrow'
                     {cutError && (
                       <span className="text-sm text-red-600 dark:text-red-400">{cutError}</span>
                     )}
+                  </div>
+                )}
+                {isVideoCutEnabled && speedMode && (
+                  <div className="flex flex-col gap-2 py-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-gray-600 dark:text-gray-400 shrink-0">Encode ×</span>
+                      <div className="flex flex-wrap gap-1">
+                        {SEGMENT_SPEED_FACTORS.map((f) => (
+                          <button
+                            key={f}
+                            type="button"
+                            onClick={() => setSpeedFactor(f)}
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold touch-target min-w-[40px] ${
+                              speedFactor === f
+                                ? 'bg-violet-600 text-white'
+                                : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
+                            }`}
+                          >
+                            {f}×
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleSpeedSegment()}
+                        disabled={speedProgress !== null || cutProgress !== null || startTime >= endTime}
+                        className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold touch-target"
+                      >
+                        {speedProgress !== null ? `Processing… ${speedProgress}%` : 'Apply speed'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setSpeedMode(false); setSpeedError(null) }}
+                        disabled={speedProgress !== null || cutProgress !== null}
+                        className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-medium touch-target disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      {speedError && (
+                        <span className="text-sm text-red-600 dark:text-red-400">{speedError}</span>
+                      )}
+                    </div>
                   </div>
                 )}
               {currentStepId && canEdit && (() => {

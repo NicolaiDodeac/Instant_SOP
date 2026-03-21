@@ -59,6 +59,14 @@ After creating/updating `.env.local`:
 
 ⚠️ **Important**: Next.js only reads `.env.local` when the server starts. You must restart after changing environment variables.
 
+## Share links & QR codes (`NEXT_PUBLIC_APP_URL`)
+
+Copied share URLs and downloaded QR codes use **`NEXT_PUBLIC_APP_URL`** as the site base when it is set (e.g. `https://your-app.vercel.app`). That way, while developing on **localhost**, links still point at your **production** deployment so you can open them on a phone.
+
+- Add to `.env.local`: `NEXT_PUBLIC_APP_URL=https://your-production-domain` (no trailing slash).
+- Set the same variable on **Vercel** (Project → Settings → Environment Variables) for production builds.
+- If you omit it, the app falls back to the current origin (`localhost` in dev).
+
 ## Cloudflare R2 (all media: video, thumbnails, step photos)
 
 **Supabase** is used for **authentication and Postgres only** — there is **no** Supabase Storage bucket for this app. Video, thumbnails, and step images are stored as objects in **R2**; `video_path`, `thumbnail_path`, and `image_path` in the database are **R2 object keys**.

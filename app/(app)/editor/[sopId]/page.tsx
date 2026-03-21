@@ -1976,26 +1976,6 @@ style: kind === 'arrow'
                 }
               />
             )}
-
-          {/* Share panel if published */}
-          {sop.published && sop.share_slug && (
-            <div className="p-2 md:p-3 bg-white dark:bg-gray-800 rounded-lg">
-              <h3 className="font-semibold text-sm mb-1">Share this SOP</h3>
-              <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
-                {typeof window !== 'undefined' &&
-                  `${window.location.origin}/sop/${sop.share_slug}`}
-              </p>
-              <img
-                src={`/api/qr?url=${encodeURIComponent(
-                  typeof window !== 'undefined'
-                    ? `${window.location.origin}/sop/${sop.share_slug}`
-                    : ''
-                )}`}
-                alt="QR code to share this SOP"
-                className="w-48 h-48 mx-auto"
-              />
-            </div>
-          )}
         </div>
       )}
     </div>

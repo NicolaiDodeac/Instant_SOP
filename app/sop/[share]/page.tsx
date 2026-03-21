@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
+import { getSharePageUrl } from '@/lib/public-site-url'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
 import StepCard from '@/components/StepCard'
 
@@ -19,6 +20,12 @@ export default function PublicViewerPage() {
   const [videoUrls, setVideoUrls] = useState<Record<string, string | null>>({})
   const [imageUrls, setImageUrls] = useState<Record<string, string | null>>({})
   const [loading, setLoading] = useState(true)
+  const [shareUrl, setShareUrl] = useState('')
+  const [linkCopied, setLinkCopied] = useState(false)
+
+  useEffect(() => {
+    setShareUrl(getSharePageUrl(shareSlug))
+  }, [shareSlug])
 
   useEffect(() => {
     void (async () => {
@@ -138,6 +145,46 @@ export default function PublicViewerPage() {
     setImageUrls(iUrls)
   }
 
+  async function copyShareLink() {
+    const url = shareUrl || getSharePageUrl(shareSlug)
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = url
+        ta.style.position = 'fixed'
+        ta.style.left = '-9999px'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      } catch {
+        return
+      }
+    }
+    setLinkCopied(true)
+    window.setTimeout(() => setLinkCopied(false), 2000)
+  }
+
+  async function downloadQrPng() {
+    const url = shareUrl || getSharePageUrl(shareSlug)
+    try {
+      const res = await fetch(`/api/qr?url=${encodeURIComponent(url)}`)
+      if (!res.ok) return
+      const blob = await res.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = objectUrl
+      a.download = `${shareSlug}-qr.png`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(objectUrl)
+    } catch (e) {
+      console.error('QR download failed:', e)
+    }
+  }
 
   if (loading) {
     return (
@@ -194,6 +241,49 @@ export default function PublicViewerPage() {
             totalSteps={steps.length}
           />
         ))}
+      </div>
+
+      {/* Share link + QR (view mode only) */}
+      <div className="px-4 pt-6 pb-2 border-t border-gray-200 dark:border-gray-800 safe-left safe-right max-w-lg mx-auto w-full">
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          Share this SOP
+        </h2>
+        <button
+          type="button"
+          onClick={() => void copyShareLink()}
+          className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 text-left text-sm break-all hover:bg-gray-50 dark:hover:bg-gray-700/80 transition-colors min-h-[48px]"
+        >
+          {linkCopied ? (
+            <span className="text-green-600 dark:text-green-400 font-medium">Copied!</span>
+          ) : (
+            <span className="text-blue-600 dark:text-blue-400">
+              {shareUrl || `…/sop/${shareSlug}`}
+            </span>
+          )}
+        </button>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
+          Tap to copy link to clipboard
+        </p>
+        {shareUrl ? (
+          <button
+            type="button"
+            onClick={() => void downloadQrPng()}
+            className="mt-4 w-full flex flex-col items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-3 px-2 hover:bg-gray-50 dark:hover:bg-gray-700/80 transition-colors min-h-[48px]"
+            aria-label="Download QR code as PNG"
+          >
+            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
+              Tap QR to download image
+            </span>
+            {/* eslint-disable-next-line @next/next/no-img-element -- dynamic API URL */}
+            <img
+              src={`/api/qr?url=${encodeURIComponent(shareUrl)}`}
+              alt=""
+              width={192}
+              height={192}
+              className="w-48 h-48 object-contain"
+            />
+          </button>
+        ) : null}
       </div>
 
       {/* Install prompt (Android: Add to Home screen / Install app) */}

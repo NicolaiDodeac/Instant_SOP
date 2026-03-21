@@ -21,7 +21,11 @@ import { compressVideoWithMediabunny } from '@/lib/video-compress-mediabunny'
 import { generateThumbnail } from '@/lib/thumbnail'
 import { isVideoCutAsync, isVideoCutEnabled } from '@/lib/feature-flags'
 import { nanoid } from 'nanoid'
+import Image from 'next/image'
 import VideoCapture from '@/components/VideoCapture'
+
+const CUT_ICON_SRC = '/Film%20Editing.png'
+const SPEED_ICON_SRC = '/timer.png'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -39,6 +43,14 @@ function isAnnotationIdFromDb(id: string): boolean {
 /** True if step id is from DB (sop_steps); false for draft steps with nanoid. */
 function isStepIdFromDb(stepId: string): boolean {
   return UUID_REGEX.test(stepId)
+}
+
+/** IndexedDB draft has edits that were never saved with PUT /sync (or legacy draft newer than server). */
+function localDraftHasUnsavedEdits(draft: DraftSOP, serverUpdatedMs: number): boolean {
+  if (draft.lastSyncedAt != null) {
+    return draft.lastModified > draft.lastSyncedAt
+  }
+  return draft.lastModified > serverUpdatedMs
 }
 import TimeBar, { type TimelineDragMode } from '@/components/TimeBar'
 import AnnotToolbar from '@/components/AnnotToolbar'
@@ -76,6 +88,10 @@ export default function EditorPage() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'saving' | 'updated'>('idle')
   const [loadedFromServer, setLoadedFromServer] = useState(false)
+  /** After a clean server load, first saveDraftState aligns lastSyncedAt with lastModified */
+  const baselineDraftSyncRef = useRef(false)
+  /** Skip one IndexedDB persist after PUT /sync when setState will re-run the draft effect */
+  const skipNextDraftPersistRef = useRef(false)
   const [stepUploadStatus, setStepUploadStatus] = useState<Record<string, 'compressing' | 'uploading' | 'failed' | null>>({})
   const [stepUploadProgress, setStepUploadProgress] = useState<Record<string, number>>({})
   const [stepUploadResult, setStepUploadResult] = useState<Record<string, 'compressed' | 'original' | null>>({})
@@ -196,40 +212,79 @@ export default function EditorPage() {
         return
       }
 
-      setSop(sopData as SOP)
+      const serverUpdatedMs = sopData.updated_at ? Date.parse(String(sopData.updated_at)) : 0
+      const localDraft = await getDraft(sopId)
+      const restoreLocalDraft =
+        !!localDraft && localDraftHasUnsavedEdits(localDraft, serverUpdatedMs)
+
       setLoadedFromServer(true)
 
-      // Load steps
-      const { data: stepsData } = await supabase
-        .from('sop_steps')
-        .select('*')
-        .eq('sop_id', sopId)
-        .order('idx', { ascending: true })
-
-      if (stepsData) {
-        setSteps(stepsData as SOPStep[])
-        if (stepsData.length > 0) {
-          setCurrentStepId(stepsData[0].id)
+      if (restoreLocalDraft && localDraft) {
+        baselineDraftSyncRef.current = false
+        setSop({
+          ...(sopData as SOP),
+          title: localDraft.title,
+          description: localDraft.description,
+        })
+        const draftSteps: SOPStep[] = localDraft.steps.map((s) => ({
+          id: s.id,
+          sop_id: sopId,
+          idx: s.idx,
+          title: s.title,
+          instructions: s.instructions,
+          video_path: s.videoPath,
+          thumbnail_path: s.thumbnailPath,
+          image_path: s.imagePath,
+          duration_ms: s.duration_ms,
+        }))
+        setSteps(draftSteps)
+        const annsMap: Record<string, StepAnnotation[]> = {}
+        localDraft.steps.forEach((s) => {
+          if (s.annotations.length > 0) {
+            annsMap[s.id] = s.annotations
+          }
+        })
+        setAnnotations(annsMap)
+        if (draftSteps.length > 0) {
+          setCurrentStepId(draftSteps[0].id)
         }
-      }
+        setHasUnsavedChanges(true)
+      } else {
+        baselineDraftSyncRef.current = true
+        setSop(sopData as SOP)
 
-      // Load annotations
-      if (stepsData && stepsData.length > 0) {
-        const stepIds = stepsData.map((s: SOPStep) => s.id)
-        const { data: annsData } = await supabase
-          .from('step_annotations')
+        // Load steps
+        const { data: stepsData } = await supabase
+          .from('sop_steps')
           .select('*')
-          .in('step_id', stepIds)
+          .eq('sop_id', sopId)
+          .order('idx', { ascending: true })
 
-        if (annsData) {
-          const annsMap: Record<string, StepAnnotation[]> = {}
-          annsData.forEach((ann: StepAnnotation) => {
-            if (!annsMap[ann.step_id]) {
-              annsMap[ann.step_id] = []
-            }
-            annsMap[ann.step_id].push(ann as StepAnnotation)
-          })
-          setAnnotations(annsMap)
+        if (stepsData) {
+          setSteps(stepsData as SOPStep[])
+          if (stepsData.length > 0) {
+            setCurrentStepId(stepsData[0].id)
+          }
+        }
+
+        // Load annotations
+        if (stepsData && stepsData.length > 0) {
+          const stepIds = stepsData.map((s: SOPStep) => s.id)
+          const { data: annsData } = await supabase
+            .from('step_annotations')
+            .select('*')
+            .in('step_id', stepIds)
+
+          if (annsData) {
+            const annsMap: Record<string, StepAnnotation[]> = {}
+            annsData.forEach((ann: StepAnnotation) => {
+              if (!annsMap[ann.step_id]) {
+                annsMap[ann.step_id] = []
+              }
+              annsMap[ann.step_id].push(ann as StepAnnotation)
+            })
+            setAnnotations(annsMap)
+          }
         }
       }
     } catch (err) {
@@ -305,7 +360,11 @@ export default function EditorPage() {
   // Save draft when annotations (or other draft data) change, so we always persist latest state
   useEffect(() => {
     if (!sop) return
-    saveDraftState()
+    if (skipNextDraftPersistRef.current) {
+      skipNextDraftPersistRef.current = false
+      return
+    }
+    void saveDraftState()
   }, [sop, steps, annotations])
 
   async function loadVideoUrl(videoPath: string) {
@@ -493,6 +552,7 @@ export default function EditorPage() {
           stepId,
           startMs: cutStartMs,
           endMs: cutEndMs,
+          ...(currentStep.video_path ? { videoPath: currentStep.video_path } : {}),
           ...(isVideoCutAsync ? { async: true } : {}),
         }),
       })
@@ -596,6 +656,7 @@ export default function EditorPage() {
           startMs: t0,
           endMs: t1,
           speedFactor: S,
+          ...(currentStep.video_path ? { videoPath: currentStep.video_path } : {}),
           ...(isVideoCutAsync ? { async: true } : {}),
         }),
       })
@@ -960,7 +1021,7 @@ export default function EditorPage() {
           title: `Step ${newIdx + 1}`,
           annotations: [],
         })
-        await saveDraft(draft)
+        await saveDraft({ ...draft, lastModified: Date.now() })
       }
       setSteps((prev) => [...prev, newStep])
       setCurrentStepId(newStepId)
@@ -1005,7 +1066,7 @@ export default function EditorPage() {
       const draft = await getDraft(sopId)
       if (draft) {
         draft.steps = draft.steps.filter((s) => s.id !== stepId)
-        await saveDraft(draft)
+        await saveDraft({ ...draft, lastModified: Date.now() })
       }
       setSteps((prev) => prev.filter((s) => s.id !== stepId))
       setAnnotations((prev) => {
@@ -1233,14 +1294,33 @@ style: kind === 'arrow'
     }
   }
 
-  async function saveDraftState() {
+  async function saveDraftState(options?: {
+    markSynced?: boolean
+    stepsOverride?: SOPStep[]
+    annotationsOverride?: Record<string, StepAnnotation[]>
+  }) {
     if (!sop) return
+
+    const stepsToUse = options?.stepsOverride ?? steps
+    const annotationsToUse = options?.annotationsOverride ?? annotations
+    const existing = await getDraft(sop.id)
+    const now = Date.now()
+
+    let nextLastSyncedAt: number | undefined
+    if (options?.markSynced) {
+      nextLastSyncedAt = now
+    } else if (baselineDraftSyncRef.current) {
+      baselineDraftSyncRef.current = false
+      nextLastSyncedAt = now
+    } else {
+      nextLastSyncedAt = existing?.lastSyncedAt
+    }
 
     const draft: DraftSOP = {
       id: sop.id,
       title: sop.title,
       description: sop.description,
-      steps: steps.map((step) => ({
+      steps: stepsToUse.map((step) => ({
         id: step.id,
         idx: step.idx,
         title: step.title,
@@ -1249,9 +1329,10 @@ style: kind === 'arrow'
         thumbnailPath: step.thumbnail_path,
         imagePath: step.image_path,
         duration_ms: step.duration_ms,
-        annotations: annotations[step.id] || [],
+        annotations: annotationsToUse[step.id] || [],
       })),
-      lastModified: Date.now(),
+      lastModified: now,
+      ...(typeof nextLastSyncedAt === 'number' ? { lastSyncedAt: nextLastSyncedAt } : {}),
     }
 
     await saveDraft(draft)
@@ -1298,22 +1379,28 @@ style: kind === 'arrow'
       const data = res.ok ? await res.json() : null
       if (!res.ok) throw new Error((data as { error?: string })?.error ?? res.statusText)
       const newStepIds = (data as { newStepIds?: Record<string, string> })?.newStepIds ?? {}
+      let nextSteps = steps
+      let nextAnnotationsMap = annotations
       if (Object.keys(newStepIds).length > 0) {
-        setSteps((prev) =>
-          prev.map((s) => ({ ...s, id: newStepIds[s.id] ?? s.id }))
-        )
-        setAnnotations((prev) => {
-          const next: Record<string, StepAnnotation[]> = {}
-          for (const [stepId, anns] of Object.entries(prev)) {
-            const finalId = newStepIds[stepId] ?? stepId
-            next[finalId] = anns.map((a) => ({ ...a, step_id: finalId }))
-          }
-          return next
-        })
+        nextSteps = steps.map((s) => ({ ...s, id: newStepIds[s.id] ?? s.id }))
+        const merged: Record<string, StepAnnotation[]> = {}
+        for (const [stepId, anns] of Object.entries(annotations)) {
+          const finalId = newStepIds[stepId] ?? stepId
+          merged[finalId] = anns.map((a) => ({ ...a, step_id: finalId }))
+        }
+        nextAnnotationsMap = merged
+        setSteps(nextSteps)
+        setAnnotations(nextAnnotationsMap)
         setCurrentStepId((id) => (id ? newStepIds[id] ?? id : null))
+        skipNextDraftPersistRef.current = true
       }
       setHasUnsavedChanges(false)
       setUpdateStatus('updated')
+      await saveDraftState({
+        markSynced: true,
+        stepsOverride: nextSteps,
+        annotationsOverride: nextAnnotationsMap,
+      })
     } catch (err) {
       console.error('Sync failed:', err)
       setUpdateStatus('idle')
@@ -1610,7 +1697,7 @@ style: kind === 'arrow'
                         setTimelineDragMode('seek')
                       }
                     }}
-                    className={`p-2 rounded-lg touch-target transition-colors ${
+                    className={`flex items-center justify-center rounded-lg touch-target p-0.5 transition-colors ${
                       cutMode
                         ? 'bg-amber-500 text-white ring-2 ring-amber-400 ring-offset-2'
                         : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
@@ -1618,9 +1705,14 @@ style: kind === 'arrow'
                     title={cutMode ? 'Exit cut mode' : 'Set range to cut from video'}
                     aria-label={cutMode ? 'Exit cut mode' : 'Cut video'}
                   >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 9l6 6 4-4M4 4l4 4M20 20l-4-4M6 9a3 3 0 100-6 3 3 0 000 6zM18 15a3 3 0 100-6 3 3 0 000 6z" />
-                    </svg>
+                    <Image
+                      src={CUT_ICON_SRC}
+                      alt=""
+                      width={44}
+                      height={44}
+                      className="size-11 object-contain opacity-90 dark:opacity-100"
+                      aria-hidden
+                    />
                   </button>
                   {cutMode && (
                     <span className="text-sm text-amber-700 dark:text-amber-300 font-medium">
@@ -1644,7 +1736,7 @@ style: kind === 'arrow'
                         setTimelineDragMode('seek')
                       }
                     }}
-                    className={`p-2 rounded-lg touch-target transition-colors ${
+                    className={`flex items-center justify-center rounded-lg touch-target p-0.5 transition-colors ${
                       speedMode
                         ? 'bg-violet-500 text-white ring-2 ring-violet-400 ring-offset-2'
                         : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
@@ -1652,9 +1744,14 @@ style: kind === 'arrow'
                     title={speedMode ? 'Exit speed mode' : 'Speed up a segment'}
                     aria-label={speedMode ? 'Exit speed mode' : 'Speed up segment'}
                   >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
+                    <Image
+                      src={SPEED_ICON_SRC}
+                      alt=""
+                      width={44}
+                      height={44}
+                      className="size-11 object-contain opacity-90 dark:opacity-100"
+                      aria-hidden
+                    />
                   </button>
                   {speedMode && (
                     <span className="text-sm text-violet-700 dark:text-violet-300 font-medium">

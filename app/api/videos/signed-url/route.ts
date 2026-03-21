@@ -53,17 +53,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: stepThumbError.message }, { status: 500 })
     }
 
-    const step = stepByVideo ?? stepByImage ?? stepByThumb
-    if (!step) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    }
-
-    const sopsData = step.sops
-    const sop = (Array.isArray(sopsData) ? sopsData[0] : sopsData) as { owner: string; published: boolean } | null | undefined
-    if (!sop) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    }
-
     let isSuperUser = false
     const { data: superRow } = await supabase
       .from('super_users')
@@ -73,9 +62,43 @@ export async function GET(request: NextRequest) {
     isSuperUser = !!superRow
     if (process.env.SUPER_USER_ID && process.env.SUPER_USER_ID === user.id) isSuperUser = true
 
-    // Owners and super users may read draft media; published SOPs are readable by any signed-in user.
-    if (sop.owner !== user.id && !sop.published && !isSuperUser) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    const step = stepByVideo ?? stepByImage ?? stepByThumb
+
+    if (step) {
+      const sopsData = step.sops
+      const sop = (Array.isArray(sopsData) ? sopsData[0] : sopsData) as
+        | { owner: string; published: boolean }
+        | null
+        | undefined
+      if (!sop) {
+        return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      }
+      if (sop.owner !== user.id && !sop.published && !isSuperUser) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+    } else {
+      // Draft / not synced: no sop_steps row yet, but R2 key is userId/sopId/stepId/file
+      const parts = path.split('/')
+      if (parts.length < 4) {
+        return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      }
+      const sopIdFromPath = parts[1]
+      const uploader = parts[0]
+      const { data: sop } = await supabase
+        .from('sops')
+        .select('owner, published')
+        .eq('id', sopIdFromPath)
+        .maybeSingle()
+      if (!sop) {
+        return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      }
+      const canReadDraftPath =
+        sop.published ||
+        (sop.owner === user.id && (uploader === user.id || uploader === sop.owner)) ||
+        (isSuperUser && (uploader === sop.owner || uploader === user.id))
+      if (!canReadDraftPath) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
     }
 
     let objectKey = path

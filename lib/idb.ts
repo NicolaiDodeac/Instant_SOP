@@ -50,7 +50,7 @@ export async function saveDraft(sop: DraftSOP): Promise<void> {
   const db = await getDB()
   await db.put('drafts', {
     ...sop,
-    lastModified: Date.now(),
+    lastModified: sop.lastModified ?? Date.now(),
   })
 }
 

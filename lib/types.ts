@@ -6,6 +6,8 @@ export interface SOP {
   published: boolean
   share_slug?: string
   created_at: string
+  /** Server row update time; used to reconcile local IndexedDB drafts */
+  updated_at?: string
 }
 
 export interface SOPStep {
@@ -43,6 +45,8 @@ export interface DraftSOP {
   description?: string
   steps: DraftStep[]
   lastModified: number
+  /** Set when local state matches last successful PUT /sync (ms since epoch) */
+  lastSyncedAt?: number
 }
 
 export interface DraftStep {

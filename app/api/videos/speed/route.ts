@@ -3,6 +3,7 @@ import { createClientServer, createServiceRoleClient } from '@/lib/supabase/serv
 import { getObjectBytes, putObjectBytes } from '@/lib/r2'
 import { ffmpegSpeedSegment } from '@/lib/ffmpeg-cut'
 import { runVideoProcessingJob } from '@/lib/video-job-runner'
+import { resolveStepVideoForProcessing } from '@/lib/resolve-step-video-edit'
 import { waitUntil } from '@vercel/functions'
 
 export const runtime = 'nodejs'
@@ -36,6 +37,7 @@ export async function POST(request: NextRequest) {
       startMs?: number
       endMs?: number
       speedFactor?: number
+      videoPath?: string | null
       async?: boolean
     }
 
@@ -44,7 +46,7 @@ export async function POST(request: NextRequest) {
     const startMs = body.startMs
     const endMs = body.endMs
     const speedFactor = body.speedFactor
-    const useAsync = body.async === true
+    const useAsyncRequested = body.async === true
 
     if (!sopId || !stepId || typeof startMs !== 'number' || typeof endMs !== 'number') {
       return NextResponse.json({ error: 'Missing sopId, stepId, startMs, or endMs' }, { status: 400 })
@@ -56,40 +58,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'speedFactor must be 1–16 (exclusive of 1)' }, { status: 400 })
     }
 
-    const { data: step, error: stepErr } = await supabase
-      .from('sop_steps')
-      .select('id, sop_id, video_path, sops!inner(owner)')
-      .eq('id', stepId)
-      .eq('sop_id', sopId)
-      .maybeSingle()
-
-    if (stepErr) {
-      return NextResponse.json({ error: stepErr.message }, { status: 500 })
-    }
-    if (!step) {
-      return NextResponse.json({ error: 'Step not found' }, { status: 404 })
+    const resolved = await resolveStepVideoForProcessing(supabase, {
+      userId: user.id,
+      sopId,
+      stepId,
+      videoPathFromBody: body.videoPath,
+    })
+    if (!resolved.ok) {
+      return NextResponse.json({ error: resolved.error }, { status: resolved.status })
     }
 
-    const sopsData = step.sops
-    const sop = (Array.isArray(sopsData) ? sopsData[0] : sopsData) as { owner: string } | null | undefined
-    if (!sop) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
-    const isOwner = sop.owner === user.id
-    let isSuperUser = false
-    const { data: superRow } = await supabase
-      .from('super_users')
-      .select('user_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-    isSuperUser = !!superRow
-    if (process.env.SUPER_USER_ID && process.env.SUPER_USER_ID === user.id) isSuperUser = true
-    if (!isOwner && !isSuperUser) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
-    if (!step.video_path) {
-      return NextResponse.json({ error: 'Step has no video' }, { status: 400 })
-    }
+    const { videoPath, canEnqueueAsyncJob } = resolved
+    const useAsync = useAsyncRequested && canEnqueueAsyncJob
 
     if (useAsync) {
       const service = createServiceRoleClient()
@@ -133,7 +113,7 @@ export async function POST(request: NextRequest) {
 
     let inputBuffer: Buffer
     try {
-      inputBuffer = await getObjectBytes(step.video_path)
+      inputBuffer = await getObjectBytes(videoPath)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       return NextResponse.json({ error: msg || 'Failed to read video from storage' }, { status: 500 })
@@ -141,13 +121,13 @@ export async function POST(request: NextRequest) {
 
     try {
       const outBuffer = await ffmpegSpeedSegment(inputBuffer, startMs, endMs, speedFactor)
-      await putObjectBytes(step.video_path, outBuffer, 'video/mp4')
+      await putObjectBytes(videoPath, outBuffer, 'video/mp4')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       return NextResponse.json({ error: msg }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true, videoPath: step.video_path })
+    return NextResponse.json({ ok: true, videoPath })
   } catch (error) {
     const err = error as { message?: unknown; stack?: unknown; name?: unknown }
     const details =

@@ -92,7 +92,11 @@ R2_REGION=auto
 ```json
 [
   {
-    "AllowedOrigins": ["http://localhost:3000", "https://your-production-domain.com"],
+    "AllowedOrigins": [
+      "http://localhost:3000",
+      "https://your-production-domain.com",
+      "https://your-project.vercel.app"
+    ],
     "AllowedMethods": ["GET", "PUT", "HEAD"],
     "AllowedHeaders": ["*"],
     "ExposeHeaders": ["ETag", "Content-Length"],
@@ -101,11 +105,15 @@ R2_REGION=auto
 ]
 ```
 
-If uploads show **Failed to fetch** in the console, fix **R2 CORS** first, then verify **Content-Type** matches what was sent when requesting the signed URL (`videoContentType`, `imageContentType`, or `image/jpeg` for thumbnails).
+Replace `your-project.vercel.app` with your real Vercel hostname (e.g. `instant-sop.vercel.app`). **Every origin** that performs browser uploads must appear here: if you use a **custom domain**, add that URL too. **Preview deployments** use different hostnames (`*.vercel.app`); add each hostname you use, or add a second CORS rule that lists preview URLs you care about.
+
+If uploads show **Failed to fetch** or **blocked by CORS policy** / **No 'Access-Control-Allow-Origin'** on the R2 URL, fix **R2 CORS** first, then verify **Content-Type** matches what was sent when requesting the signed URL (`videoContentType`, `imageContentType`, or `image/jpeg` for thumbnails).
 
 **Vercel / production:** Uploads go **directly to R2** (not through the Next.js body limit). Check [Vercel limits](https://vercel.com/docs/functions/runtimes#request-body-size) only for other API routes (e.g. sync JSON).
 
 **Video cut (async):** If you use `NEXT_PUBLIC_VIDEO_CUT_ASYNC=true`, run the migration that creates `video_processing_jobs` (`supabase/migrations/20260322100000_video_processing_jobs.sql` or the block in `schema.sql`). On **Vercel**, cut work runs in the background via `waitUntil` (see `maxDuration` on `/api/videos/cut`). Locally, the job still completes in the same HTTP request.
+
+**Video cut on Vercel:** Serverless bundles must include the `ffmpeg-static` binary. This project sets `outputFileTracingIncludes` and `outputFileTracingRoot` in `next.config.js` so the cut route ships the binary. If you still see “ffmpeg binary not found”, redeploy after pulling latest; if ffmpeg runs but fails, check **Vercel logs** for **memory** or **timeout** on large files.
 
 ## Verify Setup
 

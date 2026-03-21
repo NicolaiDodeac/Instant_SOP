@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { chmodSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
@@ -11,9 +12,25 @@ const require = createRequire(import.meta.url)
 function resolveFfmpegBinary(): string {
   try {
     const p = require('ffmpeg-static') as string | undefined
-    if (typeof p === 'string' && p.length > 0) return p
+    if (typeof p === 'string' && p.length > 0 && existsSync(p)) {
+      try {
+        chmodSync(p, 0o755)
+      } catch {
+        // ignore chmod errors (e.g. read-only fs)
+      }
+      return p
+    }
   } catch {
     // not installed or externalized path missing
+  }
+  const cwdFallback = join(process.cwd(), 'node_modules', 'ffmpeg-static', 'ffmpeg')
+  if (existsSync(cwdFallback)) {
+    try {
+      chmodSync(cwdFallback, 0o755)
+    } catch {
+      /* ignore */
+    }
+    return cwdFallback
   }
   return 'ffmpeg'
 }

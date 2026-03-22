@@ -7,7 +7,7 @@ import { useSupabaseClient } from '@/lib/supabase/client'
 import { getSharePageUrl } from '@/lib/public-site-url'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
 import StepCard from '@/components/StepCard'
-import { SopAuthorSignatureFetch } from '@/components/SopAuthorSignature'
+import { SopCreatedUpdatedFooter } from '@/components/SopAuthorSignature'
 import { fetchSignedMediaUrls } from '@/lib/fetch-signed-urls'
 
 export default function PublicViewerPage() {
@@ -318,7 +318,7 @@ export default function PublicViewerPage() {
       </div>
 
       <footer className="pt-2 border-t border-gray-200 dark:border-gray-800 w-full flex justify-center items-center pb-0">
-        <SopAuthorSignatureFetch sopId={sop.id} />
+        <SopCreatedUpdatedFooter sopId={sop.id} />
       </footer>
     </div>
   )

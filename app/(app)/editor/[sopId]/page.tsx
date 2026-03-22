@@ -1499,6 +1499,7 @@ style: kind === 'arrow'
             description: sop.description ?? null,
             published: true,
             share_slug: shareSlug,
+            ...(currentUserId ? { last_edited_by: currentUserId } : {}),
           })
           .eq('id', sop.id)
 
@@ -1518,7 +1519,11 @@ style: kind === 'arrow'
     if (sop.published) {
       const { error } = await supabase
         .from('sops')
-        .update({ title: sop.title, description: sop.description ?? null })
+        .update({
+          title: sop.title,
+          description: sop.description ?? null,
+          ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+        })
         .eq('id', sop.id)
       if (!error) setUpdateStatus('updated')
       setTimeout(() => setUpdateStatus('idle'), 2000)
@@ -1528,7 +1533,11 @@ style: kind === 'arrow'
     const shareSlug = sop.share_slug || nanoid(8)
     const { error } = await supabase
       .from('sops')
-      .update({ published: true, share_slug: shareSlug })
+      .update({
+        published: true,
+        share_slug: shareSlug,
+        ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+      })
       .eq('id', sop.id)
 
     if (!error) {

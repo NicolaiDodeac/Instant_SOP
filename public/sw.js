@@ -1,5 +1,5 @@
 // Service Worker for PWA
-const CACHE_NAME = 'sop-builder-v1'
+const CACHE_NAME = 'sop-builder-v2'
 const STATIC_CACHE = [
   '/',
   '/dashboard',
@@ -39,6 +39,13 @@ self.addEventListener('fetch', (event) => {
 
   // Skip navigation requests - let Next.js handle routing completely
   if (request.mode === 'navigate') {
+    return
+  }
+
+  // Do not intercept Next.js build output. Cache-first + SW can serve an older
+  // chunk while the document references a new tree → hydration mismatches.
+  // Browser HTTP cache still applies; we just avoid a second SW cache layer.
+  if (url.pathname.startsWith('/_next/')) {
     return
   }
 

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
+import { formatSopListDate } from '@/lib/format-date'
 import type { SOP } from '@/lib/types'
 import { listDrafts, deleteDraft } from '@/lib/idb'
 import type { DraftSOP } from '@/lib/types'
@@ -105,7 +106,7 @@ export default function EditorListPage() {
 
     const { data, error } = await supabase
       .from('sops')
-      .insert({ title: newTitle, owner: user.id })
+      .insert({ title: newTitle, owner: user.id, last_edited_by: user.id })
       .select()
       .single()
 
@@ -266,7 +267,7 @@ export default function EditorListPage() {
                       <h3 className="font-semibold truncate">{sop.title}</h3>
                       <p className="text-sm text-gray-600 dark:text-gray-400">
                         {sop.published ? 'Published' : 'Draft'} •{' '}
-                        {new Date(sop.created_at).toLocaleDateString()}
+                        {formatSopListDate(sop.created_at)}
                       </p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>

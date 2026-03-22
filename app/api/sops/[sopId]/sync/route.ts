@@ -52,9 +52,12 @@ export async function PUT(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
+    const sopPatch: Record<string, unknown> = { last_edited_by: user.id }
     if (title !== undefined) {
-      await service.from('sops').update({ title, description: description ?? null }).eq('id', sopId)
+      sopPatch.title = title
+      sopPatch.description = description ?? null
     }
+    await service.from('sops').update(sopPatch).eq('id', sopId)
 
     const existingSteps = await service.from('sop_steps').select('id').eq('sop_id', sopId)
     const existingIds = new Set((existingSteps.data ?? []).map((r: { id: string }) => r.id))

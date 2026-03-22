@@ -1,3 +1,19 @@
+/** Resolved via auth admin API for dashboard / viewer footers */
+export interface SopAuthorInfo {
+  displayName: string
+  email: string | null
+  avatarUrl: string | null
+}
+
+/** Creator, optional last editor (when different from owner), and timestamps */
+export interface SopAuthorMeta {
+  creator: SopAuthorInfo
+  /** Set when the last save was by someone other than the owner (e.g. super user). */
+  lastEditor: SopAuthorInfo | null
+  created_at: string
+  updated_at: string
+}
+
 export interface SOP {
   id: string
   title: string
@@ -8,6 +24,8 @@ export interface SOP {
   created_at: string
   /** Server row update time; used to reconcile local IndexedDB drafts */
   updated_at?: string
+  /** User who last saved this SOP (sync/publish); may differ from owner */
+  last_edited_by?: string | null
 }
 
 export interface SOPStep {

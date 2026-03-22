@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
+import type { SopAuthorInfo, SopAuthorMeta } from '@/lib/types'
 import type { User } from '@supabase/supabase-js'
 
 function pickDisplayName(meta: Record<string, unknown>, email: string | undefined): string {
@@ -15,13 +16,56 @@ function pickAvatarUrl(meta: Record<string, unknown>): string | null {
   return null
 }
 
-function authorFromUser(u: User) {
+function authorFromUser(u: User): SopAuthorInfo {
   const meta = (u.user_metadata ?? {}) as Record<string, unknown>
   const email = u.email ?? undefined
   return {
     displayName: pickDisplayName(meta, email),
     email: u.email ?? null,
     avatarUrl: pickAvatarUrl(meta),
+  }
+}
+
+type SopRow = {
+  id: string
+  owner: string
+  last_edited_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+const unknownAuthor: SopAuthorInfo = {
+  displayName: 'Unknown',
+  email: null,
+  avatarUrl: null,
+}
+
+async function loadAuthorsById(
+  service: ReturnType<typeof createServiceRoleClient>,
+  userIds: string[]
+): Promise<Map<string, SopAuthorInfo>> {
+  const unique = [...new Set(userIds)].filter(Boolean)
+  const map = new Map<string, SopAuthorInfo>()
+  await Promise.all(
+    unique.map(async (id) => {
+      const { data } = await service.auth.admin.getUserById(id)
+      if (data?.user) map.set(id, authorFromUser(data.user))
+    })
+  )
+  return map
+}
+
+function metaFromRow(row: SopRow, byId: Map<string, SopAuthorInfo>): SopAuthorMeta {
+  const creator = byId.get(row.owner) ?? unknownAuthor
+  let lastEditor: SopAuthorInfo | null = null
+  if (row.last_edited_by && row.last_edited_by !== row.owner) {
+    lastEditor = byId.get(row.last_edited_by) ?? null
+  }
+  return {
+    creator,
+    lastEditor,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
   }
 }
 
@@ -49,7 +93,7 @@ export async function GET(request: NextRequest) {
     if (sopId) {
       const { data: sop, error: sopError } = await supabase
         .from('sops')
-        .select('id, owner')
+        .select('id, owner, last_edited_by, created_at, updated_at')
         .eq('id', sopId)
         .maybeSingle()
 
@@ -57,12 +101,11 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: 'Not found' }, { status: 404 })
       }
 
-      const { data: ownerData, error: ownerError } = await service.auth.admin.getUserById(sop.owner)
-      if (ownerError || !ownerData?.user) {
-        return NextResponse.json({ error: 'Owner not found' }, { status: 404 })
-      }
-
-      return NextResponse.json(authorFromUser(ownerData.user))
+      const row = sop as SopRow
+      const need = [row.owner]
+      if (row.last_edited_by && row.last_edited_by !== row.owner) need.push(row.last_edited_by)
+      const byId = await loadAuthorsById(service, need)
+      return NextResponse.json(metaFromRow(row, byId))
     }
 
     if (sopIdsParam) {
@@ -76,35 +119,29 @@ export async function GET(request: NextRequest) {
 
       const { data: sops, error: sopsError } = await supabase
         .from('sops')
-        .select('id, owner')
+        .select('id, owner, last_edited_by, created_at, updated_at')
         .in('id', ids)
 
       if (sopsError || !sops?.length) {
-        return NextResponse.json({ authors: {} })
+        return NextResponse.json({ authors: {} as Record<string, SopAuthorMeta> })
       }
 
-      const ownerBySop = new Map<string, string>()
-      const uniqueOwners = new Set<string>()
-      for (const row of sops) {
-        ownerBySop.set(row.id, row.owner)
-        uniqueOwners.add(row.owner)
-      }
-
-      const authorByOwnerId = new Map<string, ReturnType<typeof authorFromUser>>()
-      for (const ownerId of uniqueOwners) {
-        const { data: ownerData } = await service.auth.admin.getUserById(ownerId)
-        if (ownerData?.user) {
-          authorByOwnerId.set(ownerId, authorFromUser(ownerData.user))
+      const rows = sops as SopRow[]
+      const needIds: string[] = []
+      for (const row of rows) {
+        needIds.push(row.owner)
+        if (row.last_edited_by && row.last_edited_by !== row.owner) {
+          needIds.push(row.last_edited_by)
         }
       }
+      const byId = await loadAuthorsById(service, needIds)
 
-      const authors: Record<string, ReturnType<typeof authorFromUser>> = {}
-      for (const [sid, oid] of ownerBySop) {
-        const a = authorByOwnerId.get(oid)
-        if (a) authors[sid] = a
+      const metas: Record<string, SopAuthorMeta> = {}
+      for (const row of rows) {
+        metas[row.id] = metaFromRow(row, byId)
       }
 
-      return NextResponse.json({ authors })
+      return NextResponse.json({ authors: metas })
     }
 
     return NextResponse.json({ error: 'Missing sopId or sopIds' }, { status: 400 })

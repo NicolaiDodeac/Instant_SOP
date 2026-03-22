@@ -13,7 +13,8 @@ create table if not exists sops (
   published boolean default false,
   share_slug text unique,
   created_at timestamptz default now(),
-  updated_at timestamptz default now()
+  updated_at timestamptz default now(),
+  last_edited_by uuid references auth.users(id) on delete set null
 );
 
 -- SOP Steps table

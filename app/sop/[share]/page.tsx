@@ -7,6 +7,7 @@ import { useSupabaseClient } from '@/lib/supabase/client'
 import { getSharePageUrl } from '@/lib/public-site-url'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
 import StepCard from '@/components/StepCard'
+import { SopCreatedUpdatedFooter } from '@/components/SopAuthorSignature'
 import { fetchSignedMediaUrls } from '@/lib/fetch-signed-urls'
 
 export default function PublicViewerPage() {
@@ -21,6 +22,8 @@ export default function PublicViewerPage() {
   const [videoUrls, setVideoUrls] = useState<Record<string, string | null>>({})
   const [imageUrls, setImageUrls] = useState<Record<string, string | null>>({})
   const [posterUrls, setPosterUrls] = useState<Record<string, string | null>>({})
+  /** False while batch presign runs; avoids showing "no media" before URLs exist. */
+  const [mediaSignedUrlsReady, setMediaSignedUrlsReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const [shareUrl, setShareUrl] = useState('')
   const [linkCopied, setLinkCopied] = useState(false)
@@ -43,8 +46,17 @@ export default function PublicViewerPage() {
   }, [shareSlug])
 
   useEffect(() => {
-    if (steps.length > 0) {
-      loadAllVideos()
+    if (steps.length === 0) {
+      setMediaSignedUrlsReady(true)
+      return
+    }
+    setMediaSignedUrlsReady(false)
+    let cancelled = false
+    void loadAllVideos().then(() => {
+      if (!cancelled) setMediaSignedUrlsReady(true)
+    })
+    return () => {
+      cancelled = true
     }
   }, [steps])
 
@@ -220,7 +232,7 @@ export default function PublicViewerPage() {
   }
 
   return (
-    <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right bg-gray-50 dark:bg-gray-900">
       {/* Header with back arrow */}
       <div className="sticky top-0 z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
         <div className="flex gap-2 px-2 py-2 min-h-[44px]">
@@ -257,12 +269,13 @@ export default function PublicViewerPage() {
             totalSteps={steps.length}
             playbackActive={activePlaybackStepId === step.id}
             onIntersectionRatio={(ratio) => handleStepIntersectionRatio(step.id, ratio)}
+            mediaSignedUrlsReady={mediaSignedUrlsReady}
           />
         ))}
       </div>
 
       {/* Share link + QR (view mode only) */}
-      <div className="px-4 pt-6 pb-8 border-t border-gray-200 dark:border-gray-800 safe-left safe-right max-w-lg mx-auto w-full safe-bottom">
+      <div className="px-4 pt-4 pb-1 border-t border-gray-200 dark:border-gray-800 safe-left safe-right max-w-lg mx-auto w-full">
         <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
           Share this SOP
         </h2>
@@ -303,6 +316,10 @@ export default function PublicViewerPage() {
           </button>
         ) : null}
       </div>
+
+      <footer className="pt-2 border-t border-gray-200 dark:border-gray-800 w-full flex justify-center items-center pb-0">
+        <SopCreatedUpdatedFooter sopId={sop.id} />
+      </footer>
     </div>
   )
 }

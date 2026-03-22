@@ -8,10 +8,12 @@ type Editor = { user_id: string; email: string | null }
 export default function AdminEditorsPage() {
   const [editors, setEditors] = useState<Editor[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [addEmail, setAddEmail] = useState('')
   const [addError, setAddError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [removeError, setRemoveError] = useState<string | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -21,6 +23,8 @@ export default function AdminEditorsPage() {
   async function loadEditors() {
     setLoading(true)
     setForbidden(false)
+    setLoadError(null)
+    setRemoveError(null)
     try {
       const res = await fetch('/api/admin/editors')
       if (res.status === 403) {
@@ -30,12 +34,23 @@ export default function AdminEditorsPage() {
       }
       if (!res.ok) {
         setEditors([])
+        let message = `Failed to load editors (${res.status})`
+        try {
+          const errData = await res.json()
+          if (typeof errData?.error === 'string') {
+            message = errData.error
+          }
+        } catch {
+          // keep status-based message
+        }
+        setLoadError(message)
         return
       }
       const data = await res.json()
       setEditors(data.editors ?? [])
     } catch {
       setEditors([])
+      setLoadError('Could not load editors. Check your connection and try again.')
     } finally {
       setLoading(false)
     }
@@ -72,13 +87,24 @@ export default function AdminEditorsPage() {
 
   async function handleRemove(userId: string) {
     setRemovingId(userId)
+    setRemoveError(null)
     try {
       const res = await fetch(`/api/admin/editors?user_id=${encodeURIComponent(userId)}`, {
         method: 'DELETE',
       })
-      if (res.ok) {
-        setEditors((prev) => prev.filter((e) => e.user_id !== userId))
+      let data: { error?: string } = {}
+      try {
+        data = await res.json()
+      } catch {
+        // non-JSON body
       }
+      if (!res.ok) {
+        setRemoveError(data?.error ?? `Failed to remove editor (${res.status})`)
+        return
+      }
+      await loadEditors()
+    } catch {
+      setRemoveError('Request failed')
     } finally {
       setRemovingId(null)
     }
@@ -154,6 +180,17 @@ export default function AdminEditorsPage() {
           <h2 className="text-lg font-semibold mb-3">Editors</h2>
           {loading ? (
             <div className="text-gray-500 dark:text-gray-400">Loading…</div>
+          ) : loadError ? (
+            <div className="py-4 space-y-3">
+              <p className="text-sm text-red-600 dark:text-red-400">{loadError}</p>
+              <button
+                type="button"
+                onClick={() => loadEditors()}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-3 rounded-lg touch-target font-medium"
+              >
+                Retry
+              </button>
+            </div>
           ) : editors.length === 0 ? (
             <div className="text-gray-500 dark:text-gray-400 py-4">
               No editors yet. Add one by email above.
@@ -170,7 +207,17 @@ export default function AdminEditorsPage() {
                   </span>
                   <button
                     type="button"
-                    onClick={() => handleRemove(e.user_id)}
+                    onClick={() => {
+                      const label = e.email ?? e.user_id
+                      if (
+                        !confirm(
+                          `Remove "${label}" as an editor? They will lose access immediately. You can add them again later by email.`
+                        )
+                      ) {
+                        return
+                      }
+                      void handleRemove(e.user_id)
+                    }}
                     disabled={removingId === e.user_id}
                     className="shrink-0 text-red-600 dark:text-red-400 hover:underline text-sm touch-target disabled:opacity-50"
                   >
@@ -179,6 +226,9 @@ export default function AdminEditorsPage() {
                 </li>
               ))}
             </ul>
+          )}
+          {removeError && (
+            <p className="mt-3 text-sm text-red-600 dark:text-red-400">{removeError}</p>
           )}
         </section>
       </div>

@@ -9,6 +9,8 @@ interface StepCardProps {
   annotations: StepAnnotation[]
   videoUrl: string | null
   imageUrl?: string | null
+  /** Signed URL for video poster (viewer). */
+  posterUrl?: string | null
   stepNumber: number
   totalSteps: number
 }
@@ -18,6 +20,7 @@ export default function StepCard({
   annotations,
   videoUrl,
   imageUrl = null,
+  posterUrl = null,
   stepNumber,
   totalSteps,
 }: StepCardProps) {
@@ -101,6 +104,8 @@ export default function StepCard({
             <StepPlayer
               videoUrl={videoUrl}
               imageUrl={imageUrl}
+              posterUrl={posterUrl}
+              videoPreload={stepNumber === 1 ? 'auto' : 'metadata'}
               annotations={annotations}
               currentTime={currentTime}
               startTime={startTime}

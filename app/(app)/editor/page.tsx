@@ -271,7 +271,7 @@ export default function EditorListPage() {
                     </div>
                     <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                       {sop.published && (
-                        <span className="text-xs bg-green-200 dark:bg-green-800 px-2 py-1 rounded">
+                        <span className="text-[10px] leading-none font-normal px-1 py-0.5 rounded-sm bg-green-200 dark:bg-green-800">
                           Live
                         </span>
                       )}

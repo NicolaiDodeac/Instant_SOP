@@ -28,6 +28,11 @@ interface StepCardProps {
   playbackActive: boolean
   /** Report intersection ratio (0–1) vs viewport; parent picks the single active step. */
   onIntersectionRatio: (ratio: number) => void
+  /**
+   * When false, step may still have video_path/image_path but signed URLs are not ready yet.
+   * Avoid showing "no media" during that window (defaults true for standalone use).
+   */
+  mediaSignedUrlsReady?: boolean
 }
 
 export default function StepCard({
@@ -40,8 +45,11 @@ export default function StepCard({
   totalSteps,
   playbackActive,
   onIntersectionRatio,
+  mediaSignedUrlsReady = true,
 }: StepCardProps) {
   const primary = stepPrimaryText(step)
+  const stepExpectsMedia = !!(step.video_path || step.image_path)
+  const hasMediaUrl = !!(videoUrl || imageUrl)
   const [currentTime, setCurrentTime] = useState(0)
   const [startTime, setStartTime] = useState(0)
   const [endTime, setEndTime] = useState(0)
@@ -109,7 +117,7 @@ export default function StepCard({
 
       {/* Video or image - Full Width with Rounded Corners */}
       <div className="flex-1 bg-white px-4 pb-4 pt-2 dark:bg-gray-800">
-        {videoUrl || imageUrl ? (
+        {hasMediaUrl ? (
           <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
             <StepPlayer
               videoUrl={videoUrl}
@@ -131,10 +139,30 @@ export default function StepCard({
               showRestartButton={!!videoUrl}
             />
           </div>
+        ) : stepExpectsMedia && !mediaSignedUrlsReady ? (
+          <div
+            className="relative flex w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto aspect-[9/16] max-h-[78dvh] min-h-[200px] items-center justify-center rounded-lg bg-gray-900 md:max-h-[85vh]"
+            aria-busy="true"
+            aria-label="Loading media"
+          >
+            <div className="flex flex-col items-center gap-3">
+              <div className="h-9 w-9 animate-spin rounded-full border-2 border-gray-600 border-t-blue-500" />
+              <p className="text-sm text-gray-400">Loading media…</p>
+            </div>
+          </div>
+        ) : stepExpectsMedia && mediaSignedUrlsReady ? (
+          <div className="flex aspect-video w-full items-center justify-center rounded-lg bg-gray-200 dark:bg-gray-700">
+            <div className="text-center px-4">
+              <p className="mb-2 text-lg text-gray-500 dark:text-gray-400">Media unavailable</p>
+              {primary ? (
+                <p className="text-sm text-gray-400 dark:text-gray-500">{primary}</p>
+              ) : null}
+            </div>
+          </div>
         ) : (
           <div className="flex aspect-video w-full items-center justify-center rounded-lg bg-gray-200 dark:bg-gray-700">
-            <div className="text-center">
-              <p className="mb-2 text-lg text-gray-500 dark:text-gray-400">No media available</p>
+            <div className="text-center px-4">
+              <p className="mb-2 text-lg text-gray-500 dark:text-gray-400">No media for this step</p>
               {primary ? (
                 <p className="text-sm text-gray-400 dark:text-gray-500">{primary}</p>
               ) : null}

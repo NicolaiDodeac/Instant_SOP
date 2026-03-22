@@ -66,6 +66,12 @@ export default function StepPlayer({
   const isImageMode = !!imageUrl
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
   const [isPlaying, setIsPlaying] = useState(false)
+  /** Image loaded, or video poster/first frame is ready to paint (hides loading overlay). */
+  const [mediaPaintReady, setMediaPaintReady] = useState(() => {
+    if (imageUrl) return false
+    if (videoUrl && posterUrl) return true
+    return false
+  })
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const imageRef = useRef<HTMLImageElement>(null)
@@ -117,6 +123,17 @@ export default function StepPlayer({
       setDimensions({ width: 0, height: 0 })
     }
   }, [imageUrl])
+
+  // Reset paint state when source changes; poster counts as immediate preview for video.
+  useEffect(() => {
+    if (isImageMode) {
+      setMediaPaintReady(false)
+    } else if (!videoUrl) {
+      setMediaPaintReady(false)
+    } else {
+      setMediaPaintReady(!!posterUrl)
+    }
+  }, [isImageMode, videoUrl, imageUrl, posterUrl])
 
   useEffect(() => {
     const el = containerRef.current
@@ -175,6 +192,14 @@ export default function StepPlayer({
       }
     }
 
+    const handleLoadedData = () => {
+      setMediaPaintReady(true)
+    }
+
+    const handleVideoError = () => {
+      setMediaPaintReady(true)
+    }
+
     const handlePlay = () => {
       setIsPlaying(true)
     }
@@ -190,13 +215,17 @@ export default function StepPlayer({
     video.addEventListener('pause', handlePause)
     video.addEventListener('ended', handleEnded)
     video.addEventListener('loadedmetadata', handleLoadedMetadata)
-    
+    video.addEventListener('loadeddata', handleLoadedData)
+    video.addEventListener('error', handleVideoError)
+
     return () => {
       video.removeEventListener('timeupdate', handleTimeUpdate)
       video.removeEventListener('play', handlePlay)
       video.removeEventListener('pause', handlePause)
       video.removeEventListener('ended', handleEnded)
       video.removeEventListener('loadedmetadata', handleLoadedMetadata)
+      video.removeEventListener('loadeddata', handleLoadedData)
+      video.removeEventListener('error', handleVideoError)
     }
   }, [onTimeUpdate, onDurationUpdate, videoUrl, isImageMode])
 
@@ -460,7 +489,11 @@ export default function StepPlayer({
                 ? { width: dimensions.width, height: dimensions.height }
                 : { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }),
             }}
-            onLoad={updateDimensions}
+            onLoad={() => {
+              setMediaPaintReady(true)
+              updateDimensions()
+            }}
+            onError={() => setMediaPaintReady(true)}
             draggable={false}
           />
         ) : (
@@ -475,6 +508,15 @@ export default function StepPlayer({
             poster={posterUrl || undefined}
             {...(videoPreload !== undefined ? { preload: videoPreload } : {})}
           />
+        )}
+        {!mediaPaintReady && (
+          <div
+            className="absolute inset-0 z-[15] flex flex-col items-center justify-center gap-3 bg-black/40 pointer-events-none"
+            aria-hidden
+          >
+            <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/20 border-t-white/80" />
+            <span className="text-xs text-white/70">Loading…</span>
+          </div>
         )}
         {!isImageMode && showRestartButton && (
           <button

@@ -71,6 +71,7 @@ function localDraftHasUnsavedEdits(draft: DraftSOP, serverUpdatedMs: number): bo
 import TimeBar, { type TimelineDragMode } from '@/components/TimeBar'
 import AnnotToolbar from '@/components/AnnotToolbar'
 import StepPlayer from '@/components/StepPlayer'
+import { SopAuthorSignatureFetch } from '@/components/SopAuthorSignature'
 
 /** Editor-only preview; does not change exported video file. Gated by NEXT_PUBLIC_ENABLE_VIDEO_PREVIEW_SPEED. */
 const VIDEO_PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4, 8] as const
@@ -1668,6 +1669,12 @@ style: kind === 'arrow'
           )}
         </div>
       </div>
+
+      {!canEdit && (
+        <div className="px-2 py-2 safe-left safe-right border-b border-gray-100 dark:border-gray-800/80">
+          <SopAuthorSignatureFetch sopId={sopId} />
+        </div>
+      )}
 
       {/* Main editor: step badge + description row, then video + timeline */}
       {currentStep && (

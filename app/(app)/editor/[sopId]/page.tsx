@@ -329,16 +329,16 @@ export default function EditorPage() {
     setCutError(null)
   }, [currentStepId, steps])
 
-  // Sync TimeBar with selected annotation's times (only when not in cut mode)
+  // Sync TimeBar with selected annotation's times (not while editing video range)
   useEffect(() => {
-    if (cutMode || !selectedAnnotationId || !currentStepId) return
+    if (cutMode || speedMode || !selectedAnnotationId || !currentStepId) return
     const stepAnns = annotations[currentStepId] || []
     const selectedAnn = stepAnns.find((ann) => ann.id === selectedAnnotationId)
     if (selectedAnn) {
       setStartTime(selectedAnn.t_start_ms)
       setEndTime(selectedAnn.t_end_ms)
     }
-  }, [cutMode, selectedAnnotationId, annotations, currentStepId])
+  }, [cutMode, speedMode, selectedAnnotationId, annotations, currentStepId])
 
   useEffect(() => {
     if (!isVideoCutEnabled && cutMode) {
@@ -457,8 +457,11 @@ export default function EditorPage() {
   const hasEditorMedia =
     !!currentStep &&
     !!(currentStep.video_path || currentStep.image_path || videoUrl || imageUrl)
-  const selectedAnnotationKind = selectedAnnotationId
-    ? currentAnnotations.find((a) => a.id === selectedAnnotationId)?.kind
+  /** No annotation selection UX while editing cut/speed range on the timeline. */
+  const editingAnnotationId =
+    cutMode || speedMode ? null : selectedAnnotationId
+  const selectedAnnotationKind = editingAnnotationId
+    ? currentAnnotations.find((a) => a.id === editingAnnotationId)?.kind
     : undefined
   const arrowToolActive =
     !cutMode && !speedMode && selectedAnnotationKind === 'arrow'
@@ -1682,7 +1685,7 @@ style: kind === 'arrow'
                   endTime={endTime}
                   onAnnotationUpdate={handleAnnotationUpdate}
                   onAnnotationDelete={handleAnnotationDelete}
-                  selectedAnnotationId={selectedAnnotationId}
+                  selectedAnnotationId={editingAnnotationId}
                   onSelectAnnotation={handleSelectAnnotation}
                   onTimeUpdate={setCurrentTime}
                   onDurationUpdate={setVideoDuration}
@@ -1711,7 +1714,7 @@ style: kind === 'arrow'
                           alt=""
                           width={48}
                           height={48}
-                          className="size-12 max-h-full w-auto object-contain opacity-90 dark:opacity-100"
+                          className="h-12 w-12 shrink-0 object-contain opacity-90 dark:opacity-100"
                           aria-hidden
                         />
                       </button>
@@ -1731,7 +1734,7 @@ style: kind === 'arrow'
                           alt=""
                           width={48}
                           height={48}
-                          className="size-12 max-h-full w-auto object-contain opacity-90 dark:opacity-100"
+                          className="h-12 w-12 shrink-0 object-contain opacity-90 dark:opacity-100"
                           aria-hidden
                         />
                       </button>
@@ -1745,6 +1748,7 @@ style: kind === 'arrow'
                                 setCutError(null)
                               } else {
                                 const dur = videoDuration || currentStep.duration_ms || 0
+                                setSelectedAnnotationId(null)
                                 setSpeedMode(false)
                                 setSpeedError(null)
                                 setCutMode(true)
@@ -1767,7 +1771,7 @@ style: kind === 'arrow'
                               alt=""
                               width={48}
                               height={48}
-                              className="size-12 max-h-full w-auto object-contain opacity-90 dark:opacity-100"
+                              className="h-12 w-12 shrink-0 object-contain opacity-90 dark:opacity-100"
                               aria-hidden
                             />
                           </button>
@@ -1779,6 +1783,7 @@ style: kind === 'arrow'
                                 setSpeedError(null)
                               } else {
                                 const dur = videoDuration || currentStep.duration_ms || 0
+                                setSelectedAnnotationId(null)
                                 setCutMode(false)
                                 setCutError(null)
                                 setSpeedMode(true)
@@ -1801,7 +1806,7 @@ style: kind === 'arrow'
                               alt=""
                               width={48}
                               height={48}
-                              className="size-12 max-h-full w-auto object-contain opacity-90 dark:opacity-100"
+                              className="h-12 w-12 shrink-0 object-contain opacity-90 dark:opacity-100"
                               aria-hidden
                             />
                           </button>
@@ -2033,36 +2038,41 @@ style: kind === 'arrow'
 
           {hasEditorMedia && canEdit && (
               <AnnotToolbar
-                hasSelection={!!selectedAnnotationId}
+                hasSelection={!!editingAnnotationId}
                 selectedLabelText={
-                  selectedAnnotationId
+                  editingAnnotationId
                     ? (() => {
-                        const ann = currentAnnotations.find((a) => a.id === selectedAnnotationId)
+                        const ann = currentAnnotations.find(
+                          (a) => a.id === editingAnnotationId
+                        )
                         return ann?.kind === 'label' ? (ann.text ?? '') : undefined
                       })()
                     : undefined
                 }
                 onLabelTextChange={
-                  selectedAnnotationId
-                    ? (text) => handleAnnotationUpdate(selectedAnnotationId, { text })
+                  editingAnnotationId
+                    ? (text) =>
+                        handleAnnotationUpdate(editingAnnotationId, { text })
                     : undefined
                 }
                 selectedAnnotationKind={
-                  selectedAnnotationId
-                    ? currentAnnotations.find((a) => a.id === selectedAnnotationId)?.kind
+                  editingAnnotationId
+                    ? currentAnnotations.find((a) => a.id === editingAnnotationId)?.kind
                     : undefined
                 }
                 selectedAnnotationStyle={
-                  selectedAnnotationId
-                    ? currentAnnotations.find((a) => a.id === selectedAnnotationId)?.style
+                  editingAnnotationId
+                    ? currentAnnotations.find((a) => a.id === editingAnnotationId)?.style
                     : undefined
                 }
                 onStyleChange={
-                  selectedAnnotationId
+                  editingAnnotationId
                     ? (style) => {
-                        const ann = currentAnnotations.find((a) => a.id === selectedAnnotationId)
+                        const ann = currentAnnotations.find(
+                          (a) => a.id === editingAnnotationId
+                        )
                         if (ann)
-                          handleAnnotationUpdate(selectedAnnotationId, {
+                          handleAnnotationUpdate(editingAnnotationId, {
                             style: { ...ann.style, ...style },
                           })
                       }

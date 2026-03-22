@@ -1,8 +1,18 @@
 'use client'
 
-import { useState, useCallback } from 'react'
-import Cropper, { type Area } from 'react-easy-crop'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import Cropper, {
+  getInitialCropFromCroppedAreaPixels,
+  type Area,
+  type MediaSize,
+  type Size,
+} from 'react-easy-crop'
 import { getCroppedImageBlob } from '@/lib/crop-image'
+
+/** Vertical full-phone frame (portrait). */
+const PHONE_ASPECT = 9 / 16
+const MIN_ZOOM = 0.1
+const MAX_ZOOM = 4
 
 type Props = {
   imageSrc: string
@@ -22,11 +32,60 @@ export default function ImageCropModal({
   const [zoom, setZoom] = useState(1)
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null)
 
-  const onCropComplete = useCallback((_area: Area, pixels: Area) => {
+  const mediaSizeRef = useRef<MediaSize | null>(null)
+  const cropSizeRef = useRef<Size | null>(null)
+  const didInitPlacementRef = useRef(false)
+
+  const tryInitPlacement = useCallback(() => {
+    if (didInitPlacementRef.current) return
+    const media = mediaSizeRef.current
+    const cropSize = cropSizeRef.current
+    if (!media?.naturalWidth || !cropSize?.width) return
+
+    didInitPlacementRef.current = true
+    const { crop, zoom: z } = getInitialCropFromCroppedAreaPixels(
+      { x: 0, y: 0, width: media.naturalWidth, height: media.naturalHeight },
+      media,
+      0,
+      cropSize,
+      MIN_ZOOM,
+      MAX_ZOOM
+    )
+    setCrop(crop)
+    setZoom(z)
+  }, [])
+
+  /** Programmatic crop updates emit `onCropAreaChange`; drags emit both. */
+  const onCropAreaUpdate = useCallback((_area: Area, pixels: Area) => {
     setCroppedAreaPixels(pixels)
   }, [])
 
   const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    didInitPlacementRef.current = false
+    mediaSizeRef.current = null
+    cropSizeRef.current = null
+    setCrop({ x: 0, y: 0 })
+    setZoom(1)
+    setCroppedAreaPixels(null)
+  }, [imageSrc])
+
+  const onMediaLoaded = useCallback(
+    (mediaSize: MediaSize) => {
+      mediaSizeRef.current = mediaSize
+      tryInitPlacement()
+    },
+    [tryInitPlacement]
+  )
+
+  const onCropSizeChange = useCallback(
+    (size: Size) => {
+      cropSizeRef.current = size
+      tryInitPlacement()
+    },
+    [tryInitPlacement]
+  )
 
   const handleDone = async () => {
     if (!croppedAreaPixels) return
@@ -72,10 +131,17 @@ export default function ImageCropModal({
           image={imageSrc}
           crop={crop}
           zoom={zoom}
-          aspect={undefined}
+          rotation={0}
+          aspect={PHONE_ASPECT}
+          minZoom={MIN_ZOOM}
+          maxZoom={MAX_ZOOM}
+          restrictPosition={false}
           onCropChange={setCrop}
           onZoomChange={setZoom}
-          onCropComplete={onCropComplete}
+          onCropComplete={onCropAreaUpdate}
+          onCropAreaChange={onCropAreaUpdate}
+          onMediaLoaded={onMediaLoaded}
+          onCropSizeChange={onCropSizeChange}
           objectFit="contain"
         />
       </div>
@@ -85,15 +151,18 @@ export default function ImageCropModal({
           <span className="w-14 shrink-0">Zoom</span>
           <input
             type="range"
-            min={1}
-            max={3}
+            min={MIN_ZOOM}
+            max={MAX_ZOOM}
             step={0.05}
             value={zoom}
             onChange={(e) => setZoom(Number(e.target.value))}
             className="flex-1 min-h-[44px]"
           />
         </label>
-        <p className="text-xs text-gray-400">Drag to position, pinch or use zoom to frame the step photo.</p>
+        <p className="text-xs text-gray-400">
+          Frame is vertical (phone screen). Pinch or drag to choose what appears; zoom out leaves
+          empty space where you place the photo. The saved image matches this frame.
+        </p>
       </div>
     </div>
   )

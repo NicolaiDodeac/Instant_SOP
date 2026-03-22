@@ -78,15 +78,33 @@ export default function StepPlayer({
   
   const isSeekingRef = useRef(false)
 
-  // Update dimensions when container is laid out or resized (ResizeObserver catches initial layout)
+  // Media box for annotations: full container (video) or letterboxed image size (image)
   const updateDimensions = useCallback(() => {
-    const el = containerRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    if (rect.width > 0 && rect.height > 0) {
-      setDimensions({ width: rect.width, height: rect.height })
+    const container = containerRef.current
+    if (!container) return
+    const cw = container.clientWidth
+    const ch = container.clientHeight
+    if (cw <= 0 || ch <= 0) return
+
+    if (isImageMode) {
+      const img = imageRef.current
+      if (!img?.naturalWidth) return
+      const iw = img.naturalWidth
+      const ih = img.naturalHeight
+      const scale = Math.min(cw / iw, ch / ih)
+      const dw = iw * scale
+      const dh = ih * scale
+      setDimensions({ width: dw, height: dh })
+    } else {
+      setDimensions({ width: cw, height: ch })
     }
-  }, [])
+  }, [isImageMode])
+
+  useEffect(() => {
+    if (imageUrl) {
+      setDimensions({ width: 0, height: 0 })
+    }
+  }, [imageUrl])
 
   useEffect(() => {
     const el = containerRef.current
@@ -420,8 +438,18 @@ export default function StepPlayer({
             ref={imageRef}
             src={imageUrl!}
             alt="Step"
-            className="w-full h-full object-contain"
+            className="absolute select-none"
+            style={{
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              zIndex: 1,
+              ...(dimensions.width > 0 && dimensions.height > 0
+                ? { width: dimensions.width, height: dimensions.height }
+                : { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }),
+            }}
             onLoad={updateDimensions}
+            draggable={false}
           />
         ) : (
           <video
@@ -474,11 +502,27 @@ export default function StepPlayer({
         )}
         <svg
           ref={svgRef}
-          className="absolute inset-0 w-full h-full pointer-events-auto"
+          className={
+            isImageMode
+              ? 'absolute pointer-events-auto'
+              : 'absolute inset-0 w-full h-full pointer-events-auto'
+          }
           width={dimensions.width || 1}
           height={dimensions.height || 1}
           viewBox={`0 0 ${dimensions.width || 1} ${dimensions.height || 1}`}
-          style={{ zIndex: 5, pointerEvents: filterAnnotationsByTime ? 'none' : 'auto' }}
+          style={{
+            zIndex: 5,
+            pointerEvents: filterAnnotationsByTime ? 'none' : 'auto',
+            ...(isImageMode
+              ? {
+                  left: '50%',
+                  top: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  width: dimensions.width || 1,
+                  height: dimensions.height || 1,
+                }
+              : {}),
+          }}
           onClick={(e) => {
             if (filterAnnotationsByTime) return // Disable interaction in public viewer mode
             // Click on empty space deselects

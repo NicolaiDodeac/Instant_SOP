@@ -483,6 +483,17 @@ export default function EditorPage() {
     }
   }
 
+  /** R2 object is replaced at same key; drop cached URL and clear <video> so Range requests match the new file (avoids 416). */
+  function refreshVideoAfterR2Replace(videoPath: string) {
+    if (videoPath) {
+      delete signedMediaUrlsRef.current[videoPath]
+    }
+    setVideoUrl(null)
+    queueMicrotask(() => {
+      void loadVideoUrl(videoPath)
+    })
+  }
+
   async function loadImageUrl(imagePath: string) {
     const cached = signedMediaUrlsRef.current[imagePath]
     if (cached !== undefined) {
@@ -681,22 +692,22 @@ export default function EditorPage() {
       )
       setAnnotations((prev) => {
         const stepAnns = prev[stepId] || []
+        /** Map timeline after removing [cutStartMs, cutEndMs); interior points clip to boundaries. */
+        function mapCutT(t: number): number | null {
+          if (t <= cutStartMs) return t
+          if (t >= cutEndMs) return t - cutLen
+          return null
+        }
         const updated = stepAnns
-          .filter((ann) => {
-            if (ann.t_end_ms <= cutStartMs) return true
-            if (ann.t_start_ms >= cutEndMs) return true
-            return false
-          })
           .map((ann) => {
-            if (ann.t_start_ms >= cutEndMs) {
-              return {
-                ...ann,
-                t_start_ms: ann.t_start_ms - cutLen,
-                t_end_ms: ann.t_end_ms - cutLen,
-              }
-            }
-            return ann
+            let a = mapCutT(ann.t_start_ms)
+            let b = mapCutT(ann.t_end_ms)
+            if (a === null) a = cutStartMs
+            if (b === null) b = cutEndMs - cutLen
+            if (a >= b) return null
+            return { ...ann, t_start_ms: a, t_end_ms: b }
           })
+          .filter((a): a is StepAnnotation => a !== null)
         return { ...prev, [stepId]: updated }
       })
       setStartTime(0)
@@ -704,8 +715,8 @@ export default function EditorPage() {
       setCutMode(false)
       setCurrentTime(Math.min(t, cutStartMs >= t ? t : Math.max(0, t - cutLen)))
 
-      // Video is overwritten in storage at the same path; refresh URL.
-      loadVideoUrl(currentStep.video_path ?? '')
+      // Video is overwritten at the same key; invalidate cache + remount player (avoids 416 Range errors).
+      refreshVideoAfterR2Replace(currentStep.video_path ?? '')
 
       await regenerateAndUploadThumbnailFromStorage(stepId)
     } catch (err) {
@@ -785,24 +796,18 @@ export default function EditorPage() {
       )
       setAnnotations((prev) => {
         const stepAnns = prev[stepId] || []
+        /** Monotonic timeline map for segment speed change (keeps annotations that span [t0,t1]). */
+        function mapSpeedT(t: number): number {
+          if (t <= t0) return t
+          if (t >= t1) return t - delta
+          return t0 + (t - t0) / S
+        }
         const updated = stepAnns
           .map((ann) => {
-            if (ann.t_end_ms <= t0) return ann
-            if (ann.t_start_ms >= t1) {
-              return {
-                ...ann,
-                t_start_ms: ann.t_start_ms - delta,
-                t_end_ms: ann.t_end_ms - delta,
-              }
-            }
-            if (ann.t_start_ms >= t0 && ann.t_end_ms <= t1) {
-              return {
-                ...ann,
-                t_start_ms: t0 + (ann.t_start_ms - t0) / S,
-                t_end_ms: t0 + (ann.t_end_ms - t0) / S,
-              }
-            }
-            return null
+            const t_start = mapSpeedT(ann.t_start_ms)
+            const t_end = mapSpeedT(ann.t_end_ms)
+            if (t_start >= t_end) return null
+            return { ...ann, t_start_ms: t_start, t_end_ms: t_end }
           })
           .filter((a): a is StepAnnotation => a !== null)
         return { ...prev, [stepId]: updated }
@@ -817,7 +822,7 @@ export default function EditorPage() {
         setCurrentTime(Math.min(Math.max(0, nt), newDuration))
       }
 
-      loadVideoUrl(currentStep.video_path ?? '')
+      refreshVideoAfterR2Replace(currentStep.video_path ?? '')
       await regenerateAndUploadThumbnailFromStorage(stepId)
     } catch (err) {
       setSpeedError(err instanceof Error ? err.message : 'Speed change failed')
@@ -830,11 +835,10 @@ export default function EditorPage() {
     const step = steps.find((s) => s.id === stepId)
     if (!step?.video_path) return
 
-    let url = signedMediaUrlsRef.current[step.video_path]
-    if (url === undefined) {
-      url = await fetchSignedMediaUrl(step.video_path)
-      signedMediaUrlsRef.current[step.video_path] = url
-    }
+    // Fresh GET after video bytes changed on R2 (same path).
+    delete signedMediaUrlsRef.current[step.video_path]
+    let url = await fetchSignedMediaUrl(step.video_path)
+    signedMediaUrlsRef.current[step.video_path] = url
     if (!url) return
 
     const fileRes = await fetch(url)

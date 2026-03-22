@@ -7,7 +7,6 @@ import { useSupabaseClient } from '@/lib/supabase/client'
 import { getSharePageUrl } from '@/lib/public-site-url'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
 import StepCard from '@/components/StepCard'
-import { PwaInstallCard } from '@/components/PwaInstallCard'
 import { fetchSignedMediaUrls } from '@/lib/fetch-signed-urls'
 
 export default function PublicViewerPage() {
@@ -227,7 +226,7 @@ export default function PublicViewerPage() {
       </div>
 
       {/* Share link + QR (view mode only) */}
-      <div className="px-4 pt-6 pb-2 border-t border-gray-200 dark:border-gray-800 safe-left safe-right max-w-lg mx-auto w-full">
+      <div className="px-4 pt-6 pb-8 border-t border-gray-200 dark:border-gray-800 safe-left safe-right max-w-lg mx-auto w-full safe-bottom">
         <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
           Share this SOP
         </h2>
@@ -267,10 +266,6 @@ export default function PublicViewerPage() {
             />
           </button>
         ) : null}
-      </div>
-
-      <div className="px-4 pb-8 max-w-lg mx-auto w-full safe-bottom">
-        <PwaInstallCard />
       </div>
     </div>
   )

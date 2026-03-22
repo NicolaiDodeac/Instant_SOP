@@ -52,6 +52,15 @@ function isStepIdFromDb(stepId: string): boolean {
   return UUID_REGEX.test(stepId)
 }
 
+/** Keep idx and auto titles aligned with list order after add/remove. */
+function renumberSteps(ordered: SOPStep[]): SOPStep[] {
+  return ordered.map((s, i) => ({ ...s, idx: i, title: `Step ${i + 1}` }))
+}
+
+function renumberDraftSteps(ordered: DraftStep[]): DraftStep[] {
+  return ordered.map((s, i) => ({ ...s, idx: i, title: `Step ${i + 1}` }))
+}
+
 /** IndexedDB draft has edits that were never saved with PUT /sync (or legacy draft newer than server). */
 function localDraftHasUnsavedEdits(draft: DraftSOP, serverUpdatedMs: number): boolean {
   if (draft.lastSyncedAt != null) {
@@ -473,6 +482,8 @@ export default function EditorPage() {
   }
 
   const currentStep = steps.find((s) => s.id === currentStepId)
+  const currentStepOrdinal =
+    currentStep != null ? steps.findIndex((s) => s.id === currentStep.id) + 1 : 0
   const currentAnnotations = currentStepId ? annotations[currentStepId] || [] : []
   /** Same notion of “has media” as the StepPlayer branch: DB paths and/or resolved blob/signed URLs. */
   const hasEditorMedia =
@@ -1082,14 +1093,14 @@ export default function EditorPage() {
     e?.stopPropagation()
     if (steps.length <= 1) return
     if (editAsDraft) {
-      setSteps((prev) => prev.filter((s) => s.id !== stepId))
+      setSteps((prev) => renumberSteps(prev.filter((s) => s.id !== stepId)))
       setAnnotations((prev) => {
         const next = { ...prev }
         delete next[stepId]
         return next
       })
       if (currentStepId === stepId) {
-        const remaining = steps.filter((s) => s.id !== stepId)
+        const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
         setCurrentStepId(remaining[0]?.id ?? null)
         setVideoUrl(null)
         setImageUrl(null)
@@ -1102,17 +1113,17 @@ export default function EditorPage() {
     if (isOffline) {
       const draft = await getDraft(sopId)
       if (draft) {
-        draft.steps = draft.steps.filter((s) => s.id !== stepId)
+        draft.steps = renumberDraftSteps(draft.steps.filter((s) => s.id !== stepId))
         await saveDraft({ ...draft, lastModified: Date.now() })
       }
-      setSteps((prev) => prev.filter((s) => s.id !== stepId))
+      setSteps((prev) => renumberSteps(prev.filter((s) => s.id !== stepId)))
       setAnnotations((prev) => {
         const next = { ...prev }
         delete next[stepId]
         return next
       })
       if (currentStepId === stepId) {
-        const remaining = steps.filter((s) => s.id !== stepId)
+        const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
         setCurrentStepId(remaining[0]?.id ?? null)
         setVideoUrl(null)
         setImageUrl(null)
@@ -1126,20 +1137,25 @@ export default function EditorPage() {
       console.error('Error deleting step:', error)
       return
     }
-    setSteps((prev) => prev.filter((s) => s.id !== stepId))
+    const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
+    setSteps(remaining)
     setAnnotations((prev) => {
       const next = { ...prev }
       delete next[stepId]
       return next
     })
     if (currentStepId === stepId) {
-      const remaining = steps.filter((s) => s.id !== stepId)
       setCurrentStepId(remaining[0]?.id ?? null)
       setVideoUrl(null)
       setImageUrl(null)
     }
     await deleteVideoBlob(stepId)
     await deleteImageBlob(stepId)
+    await Promise.all(
+      remaining.map((s) =>
+        supabase.from('sop_steps').update({ idx: s.idx, title: s.title }).eq('id', s.id)
+      )
+    )
   }
 
   /** Leave cut/speed and timeline range handles when focusing annotations (canvas or toolbar). */
@@ -1625,7 +1641,7 @@ style: kind === 'arrow'
                   : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-gray-100'
               }`}
             >
-              {i + 1}
+              Step {i + 1}
             </button>
           ))}
           {canEdit && (
@@ -1653,22 +1669,37 @@ style: kind === 'arrow'
         </div>
       </div>
 
-      {/* Main editor: title + description at top, then video + timeline */}
+      {/* Main editor: step badge + description row, then video + timeline */}
       {currentStep && (
-        <div className="p-2 md:p-3 space-y-2 md:space-y-3">
-          <h2 className="text-xl md:text-lg font-semibold truncate">{currentStep.title}</h2>
-
-          <textarea
-            id="step-description"
-            value={currentStep.instructions ?? ''}
-            onChange={(e) => handleStepInstructionsChange(currentStep.id, e.target.value)}
-            onBlur={() => handleStepInstructionsBlur(currentStep.id)}
-            placeholder="Describe what to do in this step…"
-            rows={2}
-            readOnly={!canEdit}
-            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y disabled:opacity-90 disabled:cursor-not-allowed"
-            autoComplete="off"
-          />
+        <div className="p-2 md:p-3 space-y-1 md:space-y-2">
+          <div className="flex items-start gap-3">
+            <div
+              className="flex min-h-9 shrink-0 items-center justify-center self-start rounded bg-blue-600 px-3 py-1.5"
+              aria-hidden
+            >
+              <span className="text-base font-semibold tabular-nums leading-snug text-white">
+                Step {currentStepOrdinal}
+              </span>
+            </div>
+            {canEdit ? (
+              <textarea
+                id="step-description"
+                value={currentStep.instructions ?? ''}
+                onChange={(e) => handleStepInstructionsChange(currentStep.id, e.target.value)}
+                onBlur={() => handleStepInstructionsBlur(currentStep.id)}
+                placeholder="Describe what to do in this step…"
+                rows={2}
+                className="min-h-[52px] md:min-h-[64px] w-full min-w-0 flex-1 resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-base font-bold leading-snug text-gray-900 placeholder-gray-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 touch-target"
+                autoComplete="off"
+              />
+            ) : (
+              <p className="min-w-0 flex-1 whitespace-pre-wrap text-base font-bold leading-snug text-gray-900 dark:text-gray-100">
+                {currentStep.instructions?.trim()
+                  ? currentStep.instructions
+                  : 'No description for this step.'}
+              </p>
+            )}
+          </div>
 
           {/* Video or image + timeline (timeline only for video) */}
           {!currentStep.video_path && !videoUrl && !currentStep.image_path && !imageUrl ? (

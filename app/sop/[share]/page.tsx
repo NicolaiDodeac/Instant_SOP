@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
@@ -24,6 +24,8 @@ export default function PublicViewerPage() {
   const [loading, setLoading] = useState(true)
   const [shareUrl, setShareUrl] = useState('')
   const [linkCopied, setLinkCopied] = useState(false)
+  /** Intersection ratio per step (0–1); only one video autoplays (highest ratio ≥ 75%). */
+  const [stepIntersectRatio, setStepIntersectRatio] = useState<Record<string, number>>({})
 
   useEffect(() => {
     setShareUrl(getSharePageUrl(shareSlug))
@@ -45,6 +47,38 @@ export default function PublicViewerPage() {
       loadAllVideos()
     }
   }, [steps])
+
+  useEffect(() => {
+    setStepIntersectRatio({})
+  }, [steps])
+
+  const activePlaybackStepId = useMemo(() => {
+    let bestId: string | null = null
+    let bestRatio = -1
+    let bestIdx = Infinity
+    for (const [id, r] of Object.entries(stepIntersectRatio)) {
+      if (r < 0.75) continue
+      const idx = steps.findIndex((s) => s.id === id)
+      if (r > bestRatio || (r === bestRatio && idx < bestIdx)) {
+        bestRatio = r
+        bestId = id
+        bestIdx = idx
+      }
+    }
+    return bestId
+  }, [stepIntersectRatio, steps])
+
+  const handleStepIntersectionRatio = useCallback((stepId: string, ratio: number) => {
+    setStepIntersectRatio((prev) => {
+      const next = { ...prev }
+      if (ratio < 0.75) {
+        delete next[stepId]
+      } else {
+        next[stepId] = ratio
+      }
+      return next
+    })
+  }, [])
 
   async function loadSOP() {
     try {
@@ -221,6 +255,8 @@ export default function PublicViewerPage() {
             posterUrl={posterUrls[step.id] || null}
             stepNumber={idx + 1}
             totalSteps={steps.length}
+            playbackActive={activePlaybackStepId === step.id}
+            onIntersectionRatio={(ratio) => handleStepIntersectionRatio(step.id, ratio)}
           />
         ))}
       </div>

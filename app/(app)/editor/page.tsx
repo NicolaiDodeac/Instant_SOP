@@ -1,12 +1,15 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP } from '@/lib/types'
 import { listDrafts, deleteDraft } from '@/lib/idb'
 import type { DraftSOP } from '@/lib/types'
+
+/** DB SOP ids are UUIDs; local-only drafts may use nanoid and must stay visible to non–super-users. */
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export default function EditorListPage() {
   const router = useRouter()
@@ -31,7 +34,13 @@ export default function EditorListPage() {
       loadSOPs()
       loadDrafts()
     }
-  }, [isEditor])
+  }, [isEditor, isSuperUser])
+
+  const visibleDrafts = useMemo(() => {
+    if (isSuperUser) return drafts
+    const ownedIds = new Set(sops.map((s) => s.id))
+    return drafts.filter((d) => ownedIds.has(d.id) || !UUID_REGEX.test(d.id))
+  }, [drafts, sops, isSuperUser])
 
   async function loadMe() {
     try {
@@ -62,10 +71,16 @@ export default function EditorListPage() {
     } = await supabase.auth.getUser()
     if (!user) return
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('sops')
       .select('*')
       .order('created_at', { ascending: false })
+
+    if (!isSuperUser) {
+      query = query.eq('owner', user.id)
+    }
+
+    const { data, error } = await query
 
     if (!error && data) {
       setSops(data as SOP[])
@@ -202,11 +217,11 @@ export default function EditorListPage() {
           )}
         </div>
 
-        {drafts.length > 0 && (
+        {visibleDrafts.length > 0 && (
           <div>
             <h2 className="text-lg font-semibold mb-2">Drafts (Offline)</h2>
             <div className="space-y-2">
-              {drafts.map((draft) => (
+              {visibleDrafts.map((draft) => (
                 <div
                   key={draft.id}
                   onClick={() => router.push(`/editor/${draft.id}`)}
@@ -230,7 +245,9 @@ export default function EditorListPage() {
         )}
 
         <div>
-          <h2 className="text-lg font-semibold mb-2">All SOPs (edit)</h2>
+          <h2 className="text-lg font-semibold mb-2">
+            {isSuperUser ? 'All SOPs (edit)' : 'Your SOPs'}
+          </h2>
           {sops.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               No SOPs yet. Create one above.

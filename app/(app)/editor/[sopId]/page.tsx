@@ -24,6 +24,7 @@ import {
   isVideoCutEnabled,
   isVideoPreviewSpeedEnabled,
 } from '@/lib/feature-flags'
+import { fetchSignedMediaUrl } from '@/lib/fetch-signed-urls'
 import { nanoid } from 'nanoid'
 import Image from 'next/image'
 import VideoCapture from '@/components/VideoCapture'
@@ -49,6 +50,15 @@ function isAnnotationIdFromDb(id: string): boolean {
 /** True if step id is from DB (sop_steps); false for draft steps with nanoid. */
 function isStepIdFromDb(stepId: string): boolean {
   return UUID_REGEX.test(stepId)
+}
+
+/** Keep idx and auto titles aligned with list order after add/remove. */
+function renumberSteps(ordered: SOPStep[]): SOPStep[] {
+  return ordered.map((s, i) => ({ ...s, idx: i, title: `Step ${i + 1}` }))
+}
+
+function renumberDraftSteps(ordered: DraftStep[]): DraftStep[] {
+  return ordered.map((s, i) => ({ ...s, idx: i, title: `Step ${i + 1}` }))
 }
 
 /** IndexedDB draft has edits that were never saved with PUT /sync (or legacy draft newer than server). */
@@ -89,7 +99,8 @@ export default function EditorPage() {
   const [loading, setLoading] = useState(true)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [isEditor, setIsEditor] = useState<boolean | null>(null)
-  const [isSuperUser, setIsSuperUser] = useState(false)
+  /** `null` until /api/user/me returns (avoids redirecting super users before role is known). */
+  const [isSuperUser, setIsSuperUser] = useState<boolean | null>(null)
   const [isOffline, setIsOffline] = useState(false)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'saving' | 'updated'>('idle')
@@ -112,7 +123,7 @@ export default function EditorPage() {
   const [playbackRate, setPlaybackRate] = useState(1)
   const stepInstructionsRef = useRef<string>('')
   const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
-  const canEdit = isOwner || isSuperUser
+  const canEdit = isOwner || isSuperUser === true
   const editAsDraft = canEdit && loadedFromServer
 
   useEffect(() => {
@@ -145,6 +156,17 @@ export default function EditorPage() {
       router.replace('/dashboard')
     }
   }, [loading, isEditor, sop, router])
+
+  // Editors (non–super-user) may only open their own SOPs; others go back to the list
+  useEffect(() => {
+    if (loading || isEditor === null || isSuperUser === null || !sop || !currentUserId) return
+    if (!isEditor) return
+    if (isSuperUser) return
+    if (!loadedFromServer || !sop.owner) return
+    if (sop.owner !== currentUserId) {
+      router.replace('/editor')
+    }
+  }, [loading, isEditor, isSuperUser, sop, currentUserId, loadedFromServer, router])
 
   // Check online status
   useEffect(() => {
@@ -425,6 +447,14 @@ export default function EditorPage() {
     }
   }
 
+  /** R2 object is replaced at same key; clear <video> then reload so Range requests match the new file (avoids 416). */
+  function refreshVideoAfterR2Replace(videoPath: string) {
+    setVideoUrl(null)
+    queueMicrotask(() => {
+      void loadVideoUrl(videoPath)
+    })
+  }
+
   async function loadImageUrl(imagePath: string) {
     try {
       const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(imagePath)}`)
@@ -452,6 +482,8 @@ export default function EditorPage() {
   }
 
   const currentStep = steps.find((s) => s.id === currentStepId)
+  const currentStepOrdinal =
+    currentStep != null ? steps.findIndex((s) => s.id === currentStep.id) + 1 : 0
   const currentAnnotations = currentStepId ? annotations[currentStepId] || [] : []
   /** Same notion of “has media” as the StepPlayer branch: DB paths and/or resolved blob/signed URLs. */
   const hasEditorMedia =
@@ -610,22 +642,22 @@ export default function EditorPage() {
       )
       setAnnotations((prev) => {
         const stepAnns = prev[stepId] || []
+        /** Map timeline after removing [cutStartMs, cutEndMs); interior points clip to boundaries. */
+        function mapCutT(t: number): number | null {
+          if (t <= cutStartMs) return t
+          if (t >= cutEndMs) return t - cutLen
+          return null
+        }
         const updated = stepAnns
-          .filter((ann) => {
-            if (ann.t_end_ms <= cutStartMs) return true
-            if (ann.t_start_ms >= cutEndMs) return true
-            return false
-          })
           .map((ann) => {
-            if (ann.t_start_ms >= cutEndMs) {
-              return {
-                ...ann,
-                t_start_ms: ann.t_start_ms - cutLen,
-                t_end_ms: ann.t_end_ms - cutLen,
-              }
-            }
-            return ann
+            let a = mapCutT(ann.t_start_ms)
+            let b = mapCutT(ann.t_end_ms)
+            if (a === null) a = cutStartMs
+            if (b === null) b = cutEndMs - cutLen
+            if (a >= b) return null
+            return { ...ann, t_start_ms: a, t_end_ms: b }
           })
+          .filter((a): a is StepAnnotation => a !== null)
         return { ...prev, [stepId]: updated }
       })
       setStartTime(0)
@@ -633,8 +665,8 @@ export default function EditorPage() {
       setCutMode(false)
       setCurrentTime(Math.min(t, cutStartMs >= t ? t : Math.max(0, t - cutLen)))
 
-      // Video is overwritten in storage at the same path; refresh URL.
-      loadVideoUrl(currentStep.video_path ?? '')
+      // Video is overwritten at the same key; invalidate cache + remount player (avoids 416 Range errors).
+      refreshVideoAfterR2Replace(currentStep.video_path ?? '')
 
       await regenerateAndUploadThumbnailFromStorage(stepId)
     } catch (err) {
@@ -714,24 +746,18 @@ export default function EditorPage() {
       )
       setAnnotations((prev) => {
         const stepAnns = prev[stepId] || []
+        /** Monotonic timeline map for segment speed change (keeps annotations that span [t0,t1]). */
+        function mapSpeedT(t: number): number {
+          if (t <= t0) return t
+          if (t >= t1) return t - delta
+          return t0 + (t - t0) / S
+        }
         const updated = stepAnns
           .map((ann) => {
-            if (ann.t_end_ms <= t0) return ann
-            if (ann.t_start_ms >= t1) {
-              return {
-                ...ann,
-                t_start_ms: ann.t_start_ms - delta,
-                t_end_ms: ann.t_end_ms - delta,
-              }
-            }
-            if (ann.t_start_ms >= t0 && ann.t_end_ms <= t1) {
-              return {
-                ...ann,
-                t_start_ms: t0 + (ann.t_start_ms - t0) / S,
-                t_end_ms: t0 + (ann.t_end_ms - t0) / S,
-              }
-            }
-            return null
+            const t_start = mapSpeedT(ann.t_start_ms)
+            const t_end = mapSpeedT(ann.t_end_ms)
+            if (t_start >= t_end) return null
+            return { ...ann, t_start_ms: t_start, t_end_ms: t_end }
           })
           .filter((a): a is StepAnnotation => a !== null)
         return { ...prev, [stepId]: updated }
@@ -746,7 +772,7 @@ export default function EditorPage() {
         setCurrentTime(Math.min(Math.max(0, nt), newDuration))
       }
 
-      loadVideoUrl(currentStep.video_path ?? '')
+      refreshVideoAfterR2Replace(currentStep.video_path ?? '')
       await regenerateAndUploadThumbnailFromStorage(stepId)
     } catch (err) {
       setSpeedError(err instanceof Error ? err.message : 'Speed change failed')
@@ -758,9 +784,10 @@ export default function EditorPage() {
   async function regenerateAndUploadThumbnailFromStorage(stepId: string) {
     const step = steps.find((s) => s.id === stepId)
     if (!step?.video_path) return
-    const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(step.video_path)}`)
-    if (!res.ok) return
-    const { url } = (await res.json()) as { url: string }
+
+    const url = await fetchSignedMediaUrl(step.video_path)
+    if (!url) return
+
     const fileRes = await fetch(url)
     if (!fileRes.ok) return
     const videoBlob = await fileRes.blob()
@@ -1066,14 +1093,14 @@ export default function EditorPage() {
     e?.stopPropagation()
     if (steps.length <= 1) return
     if (editAsDraft) {
-      setSteps((prev) => prev.filter((s) => s.id !== stepId))
+      setSteps((prev) => renumberSteps(prev.filter((s) => s.id !== stepId)))
       setAnnotations((prev) => {
         const next = { ...prev }
         delete next[stepId]
         return next
       })
       if (currentStepId === stepId) {
-        const remaining = steps.filter((s) => s.id !== stepId)
+        const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
         setCurrentStepId(remaining[0]?.id ?? null)
         setVideoUrl(null)
         setImageUrl(null)
@@ -1086,17 +1113,17 @@ export default function EditorPage() {
     if (isOffline) {
       const draft = await getDraft(sopId)
       if (draft) {
-        draft.steps = draft.steps.filter((s) => s.id !== stepId)
+        draft.steps = renumberDraftSteps(draft.steps.filter((s) => s.id !== stepId))
         await saveDraft({ ...draft, lastModified: Date.now() })
       }
-      setSteps((prev) => prev.filter((s) => s.id !== stepId))
+      setSteps((prev) => renumberSteps(prev.filter((s) => s.id !== stepId)))
       setAnnotations((prev) => {
         const next = { ...prev }
         delete next[stepId]
         return next
       })
       if (currentStepId === stepId) {
-        const remaining = steps.filter((s) => s.id !== stepId)
+        const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
         setCurrentStepId(remaining[0]?.id ?? null)
         setVideoUrl(null)
         setImageUrl(null)
@@ -1110,20 +1137,25 @@ export default function EditorPage() {
       console.error('Error deleting step:', error)
       return
     }
-    setSteps((prev) => prev.filter((s) => s.id !== stepId))
+    const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
+    setSteps(remaining)
     setAnnotations((prev) => {
       const next = { ...prev }
       delete next[stepId]
       return next
     })
     if (currentStepId === stepId) {
-      const remaining = steps.filter((s) => s.id !== stepId)
       setCurrentStepId(remaining[0]?.id ?? null)
       setVideoUrl(null)
       setImageUrl(null)
     }
     await deleteVideoBlob(stepId)
     await deleteImageBlob(stepId)
+    await Promise.all(
+      remaining.map((s) =>
+        supabase.from('sop_steps').update({ idx: s.idx, title: s.title }).eq('id', s.id)
+      )
+    )
   }
 
   /** Leave cut/speed and timeline range handles when focusing annotations (canvas or toolbar). */
@@ -1609,7 +1641,7 @@ style: kind === 'arrow'
                   : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-gray-100'
               }`}
             >
-              {i + 1}
+              Step {i + 1}
             </button>
           ))}
           {canEdit && (
@@ -1637,22 +1669,37 @@ style: kind === 'arrow'
         </div>
       </div>
 
-      {/* Main editor: title + description at top, then video + timeline */}
+      {/* Main editor: step badge + description row, then video + timeline */}
       {currentStep && (
-        <div className="p-2 md:p-3 space-y-2 md:space-y-3">
-          <h2 className="text-xl md:text-lg font-semibold truncate">{currentStep.title}</h2>
-
-          <textarea
-            id="step-description"
-            value={currentStep.instructions ?? ''}
-            onChange={(e) => handleStepInstructionsChange(currentStep.id, e.target.value)}
-            onBlur={() => handleStepInstructionsBlur(currentStep.id)}
-            placeholder="Describe what to do in this step…"
-            rows={2}
-            readOnly={!canEdit}
-            className="w-full min-h-[52px] md:min-h-[64px] px-3 text-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 touch-target resize-y disabled:opacity-90 disabled:cursor-not-allowed"
-            autoComplete="off"
-          />
+        <div className="p-2 md:p-3 space-y-1 md:space-y-2">
+          <div className="flex items-start gap-3">
+            <div
+              className="flex min-h-9 shrink-0 items-center justify-center self-start rounded bg-blue-600 px-3 py-1.5"
+              aria-hidden
+            >
+              <span className="text-base font-semibold tabular-nums leading-snug text-white">
+                Step {currentStepOrdinal}
+              </span>
+            </div>
+            {canEdit ? (
+              <textarea
+                id="step-description"
+                value={currentStep.instructions ?? ''}
+                onChange={(e) => handleStepInstructionsChange(currentStep.id, e.target.value)}
+                onBlur={() => handleStepInstructionsBlur(currentStep.id)}
+                placeholder="Describe what to do in this step…"
+                rows={2}
+                className="min-h-[52px] md:min-h-[64px] w-full min-w-0 flex-1 resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-base font-bold leading-snug text-gray-900 placeholder-gray-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 touch-target"
+                autoComplete="off"
+              />
+            ) : (
+              <p className="min-w-0 flex-1 whitespace-pre-wrap text-base font-bold leading-snug text-gray-900 dark:text-gray-100">
+                {currentStep.instructions?.trim()
+                  ? currentStep.instructions
+                  : 'No description for this step.'}
+              </p>
+            )}
+          </div>
 
           {/* Video or image + timeline (timeline only for video) */}
           {!currentStep.video_path && !videoUrl && !currentStep.image_path && !imageUrl ? (

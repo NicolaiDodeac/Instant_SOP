@@ -19,14 +19,23 @@ interface StepPlayerProps {
   onDurationUpdate?: (duration: number) => void // Callback when video duration is available
   showControls?: boolean
   seekTime?: number // External seek control
+  /** Auto-play when true */
   autoPlay?: boolean
- // Auto-play when true
   /** When true, only show annotations when currentTime is in their [t_start_ms, t_end_ms] (visibility only; does not disable editing). */
   showAnnotationsOnlyInTimeRange?: boolean
   /** Filter by time AND disable drag/rotate (viewer mode). Defaults to showControls when undefined. */
   filterAnnotationsByTime?: boolean
   /** Preview playback speed (HTML5 video; typically 0.25–16; ignored in image mode). */
   playbackRate?: number
+  /** Signed URL for video poster frame (viewer); ignored in image mode. */
+  posterUrl?: string | null
+  /**
+   * HTML video preload. Omit in the editor to keep browser defaults; public viewer may set
+   * `auto` for the first step only.
+   */
+  videoPreload?: 'none' | 'metadata' | 'auto'
+  /** Transparent top-right control to seek to start (public viewer). */
+  showRestartButton?: boolean
 }
 
 const IMAGE_NOMINAL_DURATION_MS = 1000
@@ -50,6 +59,9 @@ export default function StepPlayer({
   showAnnotationsOnlyInTimeRange,
   filterAnnotationsByTime,
   playbackRate = 1,
+  posterUrl,
+  videoPreload,
+  showRestartButton = false,
 }: StepPlayerProps) {
   const isImageMode = !!imageUrl
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
@@ -460,7 +472,38 @@ export default function StepPlayer({
             controls={showControls}
             muted
             loop={false}
+            poster={posterUrl || undefined}
+            {...(videoPreload !== undefined ? { preload: videoPreload } : {})}
           />
+        )}
+        {!isImageMode && showRestartButton && (
+          <button
+            type="button"
+            aria-label="Restart from beginning"
+            className="absolute right-2 top-2 z-30 flex h-10 w-10 touch-target items-center justify-center rounded-full bg-black/25 text-white/85 shadow-sm backdrop-blur-[2px] transition hover:bg-black/40 hover:text-white active:scale-95"
+            onClick={(e) => {
+              e.stopPropagation()
+              e.preventDefault()
+              const video = videoRef.current
+              if (!video) return
+              video.currentTime = 0
+              void video.play().catch(() => {})
+            }}
+          >
+            <svg
+              className="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+            </svg>
+          </button>
         )}
         {!isImageMode && !showControls && (
           <div

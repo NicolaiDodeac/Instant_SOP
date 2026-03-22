@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
@@ -24,7 +24,7 @@ import {
   isVideoCutEnabled,
   isVideoPreviewSpeedEnabled,
 } from '@/lib/feature-flags'
-import { fetchSignedMediaUrl, fetchSignedMediaUrls } from '@/lib/fetch-signed-urls'
+import { fetchSignedMediaUrl } from '@/lib/fetch-signed-urls'
 import { nanoid } from 'nanoid'
 import Image from 'next/image'
 import VideoCapture from '@/components/VideoCapture'
@@ -113,8 +113,6 @@ export default function EditorPage() {
   const [speedError, setSpeedError] = useState<string | null>(null)
   const [playbackRate, setPlaybackRate] = useState(1)
   const stepInstructionsRef = useRef<string>('')
-  /** Presigned GET URLs keyed by storage path (batch-prefetched + successful single fetches). */
-  const signedMediaUrlsRef = useRef<Record<string, string | null>>({})
   const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
   const canEdit = isOwner || isSuperUser === true
   const editAsDraft = canEdit && loadedFromServer
@@ -178,37 +176,6 @@ export default function EditorPage() {
   useEffect(() => {
     loadSOP()
   }, [sopId])
-
-  useEffect(() => {
-    signedMediaUrlsRef.current = {}
-  }, [sopId])
-
-  const mediaPathsKey = useMemo(() => {
-    const set = new Set<string>()
-    for (const s of steps) {
-      if (s.video_path) set.add(s.video_path)
-      if (s.image_path) set.add(s.image_path)
-      if (s.thumbnail_path) set.add(s.thumbnail_path)
-    }
-    return [...set].sort().join('\0')
-  }, [steps])
-
-  useEffect(() => {
-    const paths = mediaPathsKey ? mediaPathsKey.split('\0').filter(Boolean) : []
-    if (paths.length === 0) return
-    let cancelled = false
-    void fetchSignedMediaUrls(paths).then((urls) => {
-      if (cancelled) return
-      for (const [k, v] of Object.entries(urls)) {
-        if (signedMediaUrlsRef.current[k] === undefined) {
-          signedMediaUrlsRef.current[k] = v
-        }
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [mediaPathsKey])
 
   async function loadSOP() {
     try {
@@ -421,21 +388,10 @@ export default function EditorPage() {
   }, [sop, steps, annotations])
 
   async function loadVideoUrl(videoPath: string) {
-    const cached = signedMediaUrlsRef.current[videoPath]
-    if (cached !== undefined) {
-      if (cached) {
-        setVideoUrl(cached)
-        return
-      }
-      loadLocalVideo()
-      return
-    }
-
     try {
       const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(videoPath)}`)
       if (res.ok) {
         const { url } = await res.json()
-        signedMediaUrlsRef.current[videoPath] = url
         setVideoUrl(url)
       } else {
         const text = await res.text()
@@ -450,7 +406,6 @@ export default function EditorPage() {
         // If file not found in storage (404/500), try loading from IndexedDB (local draft)
         const notFound = res.status === 404 || (res.status === 500 && (errorMessage === 'Object not found' || errorMessage.includes('not found')))
         if (notFound) {
-          signedMediaUrlsRef.current[videoPath] = null
           if (process.env.NODE_ENV === 'development') {
             console.warn('Video not found in storage, trying IndexedDB:', videoPath)
           }
@@ -483,11 +438,8 @@ export default function EditorPage() {
     }
   }
 
-  /** R2 object is replaced at same key; drop cached URL and clear <video> so Range requests match the new file (avoids 416). */
+  /** R2 object is replaced at same key; clear <video> then reload so Range requests match the new file (avoids 416). */
   function refreshVideoAfterR2Replace(videoPath: string) {
-    if (videoPath) {
-      delete signedMediaUrlsRef.current[videoPath]
-    }
     setVideoUrl(null)
     queueMicrotask(() => {
       void loadVideoUrl(videoPath)
@@ -495,28 +447,15 @@ export default function EditorPage() {
   }
 
   async function loadImageUrl(imagePath: string) {
-    const cached = signedMediaUrlsRef.current[imagePath]
-    if (cached !== undefined) {
-      if (cached) {
-        setImageUrl(cached)
-        return
-      }
-      loadLocalImage()
-      return
-    }
-
     try {
       const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(imagePath)}`)
       if (res.ok) {
         const { url } = await res.json()
-        signedMediaUrlsRef.current[imagePath] = url
         setImageUrl(url)
       } else {
         const notFound = res.status === 404 || res.status === 500
-        if (notFound) {
-          signedMediaUrlsRef.current[imagePath] = null
-          loadLocalImage()
-        } else setImageUrl(null)
+        if (notFound) loadLocalImage()
+        else setImageUrl(null)
       }
     } catch {
       loadLocalImage()
@@ -835,10 +774,7 @@ export default function EditorPage() {
     const step = steps.find((s) => s.id === stepId)
     if (!step?.video_path) return
 
-    // Fresh GET after video bytes changed on R2 (same path).
-    delete signedMediaUrlsRef.current[step.video_path]
-    let url = await fetchSignedMediaUrl(step.video_path)
-    signedMediaUrlsRef.current[step.video_path] = url
+    const url = await fetchSignedMediaUrl(step.video_path)
     if (!url) return
 
     const fileRes = await fetch(url)

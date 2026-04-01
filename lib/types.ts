@@ -19,6 +19,8 @@ export interface MachineFamily {
   name: string
   supplier?: string | null
   active: boolean
+  /** When true, station_code is shown on HMI-style machines and used in ?stationCode= URLs. */
+  uses_hmi_station_codes?: boolean
 }
 
 export interface Line {

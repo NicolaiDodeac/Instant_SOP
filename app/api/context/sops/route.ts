@@ -20,6 +20,9 @@ type StationRow = {
   section: string
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 async function filterSopIdsByMachineFamily(
   supabase: Awaited<ReturnType<typeof createClientServer>>,
   sopIds: string[],
@@ -80,13 +83,28 @@ export async function GET(request: NextRequest) {
 
     const machineId = request.nextUrl.searchParams.get('machineId')
     const stationCodeRaw = request.nextUrl.searchParams.get('stationCode')
+    const stationIdRaw = request.nextUrl.searchParams.get('stationId')
     if (!machineId) {
       return NextResponse.json({ error: 'Missing machineId' }, { status: 400 })
     }
 
-    const stationCode = stationCodeRaw != null && stationCodeRaw.trim() !== '' ? Number(stationCodeRaw) : null
-    if (stationCodeRaw && (stationCode == null || Number.isNaN(stationCode))) {
+    const stationCode =
+      stationCodeRaw != null && stationCodeRaw.trim() !== '' ? Number(stationCodeRaw) : null
+    if (stationCodeRaw && stationCodeRaw.trim() !== '' && (stationCode == null || Number.isNaN(stationCode))) {
       return NextResponse.json({ error: 'Invalid stationCode' }, { status: 400 })
+    }
+
+    const stationId =
+      stationIdRaw != null && stationIdRaw.trim() !== '' ? stationIdRaw.trim() : null
+    if (stationId && !UUID_RE.test(stationId)) {
+      return NextResponse.json({ error: 'Invalid stationId' }, { status: 400 })
+    }
+
+    if (stationCode != null && stationId) {
+      return NextResponse.json(
+        { error: 'Use either stationCode or stationId, not both' },
+        { status: 400 }
+      )
     }
 
     const { data: machineRow } = await supabase
@@ -110,21 +128,7 @@ export async function GET(request: NextRequest) {
     const leg = (legRow ?? null) as LegRow | null
     const lineId = leg?.line_id ?? null
 
-    // Attachment lookups (ids only, then hydrate SOPs).
-    const [
-      machineLinks,
-      legLinks,
-      lineLinks,
-      familyLinks,
-      stationRowRes,
-      stationLinks,
-    ] = await Promise.all([
-      supabase.from('sop_machines').select('sop_id').eq('machine_id', machine.id),
-      supabase.from('sop_line_legs').select('sop_id').eq('line_leg_id', machine.line_leg_id),
-      lineId
-        ? supabase.from('sop_lines').select('sop_id').eq('line_id', lineId)
-        : Promise.resolve({ data: [] as Array<{ sop_id: string }> }),
-      supabase.from('sop_machine_families').select('sop_id').eq('machine_family_id', machine.machine_family_id),
+    const stationSelect =
       stationCode != null
         ? supabase
             .from('machine_family_stations')
@@ -132,20 +136,34 @@ export async function GET(request: NextRequest) {
             .eq('machine_family_id', machine.machine_family_id)
             .eq('station_code', stationCode)
             .maybeSingle()
-        : Promise.resolve({ data: null as StationRow | null }),
-      stationCode != null
-        ? (async () => {
-            const st = await supabase
+        : stationId
+          ? supabase
               .from('machine_family_stations')
-              .select('id')
+              .select('id, station_code, name, section')
               .eq('machine_family_id', machine.machine_family_id)
-              .eq('station_code', stationCode)
+              .eq('id', stationId)
               .maybeSingle()
-            if (!st.data?.id) return { data: [] as Array<{ sop_id: string }> }
-            return supabase.from('sop_machine_family_stations').select('sop_id').eq('station_id', st.data.id)
-          })()
+          : Promise.resolve({ data: null as StationRow | null })
+
+    // Attachment lookups (ids only, then hydrate SOPs).
+    const [machineLinks, legLinks, lineLinks, familyLinks, stationRowRes] = await Promise.all([
+      supabase.from('sop_machines').select('sop_id').eq('machine_id', machine.id),
+      supabase.from('sop_line_legs').select('sop_id').eq('line_leg_id', machine.line_leg_id),
+      lineId
+        ? supabase.from('sop_lines').select('sop_id').eq('line_id', lineId)
         : Promise.resolve({ data: [] as Array<{ sop_id: string }> }),
+      supabase.from('sop_machine_families').select('sop_id').eq('machine_family_id', machine.machine_family_id),
+      stationSelect,
     ])
+
+    const resolvedStationId = stationRowRes.data?.id ?? null
+    const stationLinks =
+      resolvedStationId != null
+        ? await supabase
+            .from('sop_machine_family_stations')
+            .select('sop_id')
+            .eq('station_id', resolvedStationId)
+        : { data: [] as Array<{ sop_id: string }> }
 
     const idsMachine = (machineLinks.data ?? []).map((r: any) => String(r.sop_id))
     const idsLeg = (legLinks.data ?? []).map((r: any) => String(r.sop_id))
@@ -164,7 +182,7 @@ export async function GET(request: NextRequest) {
     const stationSopIdSet = new Set((stationLinks.data ?? []).map((r: any) => String(r.sop_id)))
 
     function partition(ids: string[]): { station: string[]; general: string[] } {
-      if (stationCode == null) return { station: [], general: [...new Set(ids)] }
+      if (resolvedStationId == null) return { station: [], general: [...new Set(ids)] }
       const uniq = [...new Set(ids)]
       const station = uniq.filter((id) => stationSopIdSet.has(id))
       const general = uniq.filter((id) => !stationSopIdSet.has(id))
@@ -202,7 +220,8 @@ export async function GET(request: NextRequest) {
         lineLegId: machine.line_leg_id,
         lineId,
         machineFamilyId: machine.machine_family_id,
-        stationCode,
+        stationCode: stationRowRes.data ? (stationRowRes.data as StationRow).station_code : null,
+        stationId: resolvedStationId,
       },
       station: stationRowRes.data ? (stationRowRes.data as StationRow) : null,
       results: {

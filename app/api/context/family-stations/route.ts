@@ -19,6 +19,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing machineFamilyId' }, { status: 400 })
     }
 
+    const { data: famRow } = await supabase
+      .from('machine_families')
+      .select('uses_hmi_station_codes')
+      .eq('id', familyId)
+      .maybeSingle()
+
+    const usesHmiStationCodes = Boolean(
+      famRow && (famRow as { uses_hmi_station_codes?: boolean }).uses_hmi_station_codes
+    )
+
     const { data } = await supabase
       .from('machine_family_stations')
       .select('*')
@@ -35,7 +45,7 @@ export async function GET(request: NextRequest) {
       bySection[key].push(s)
     }
 
-    return NextResponse.json({ stationsBySection: bySection })
+    return NextResponse.json({ usesHmiStationCodes, stationsBySection: bySection })
   } catch (err) {
     console.error('GET /api/context/family-stations error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

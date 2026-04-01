@@ -1,11 +1,14 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import { getPublicSiteOrigin } from '@/lib/public-site-url'
 import type { MachineFamilyStation, SOP } from '@/lib/types'
+
+const STATION_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 type MachineContextResponse = {
   machine: {
@@ -14,20 +17,48 @@ type MachineContextResponse = {
     code: string | null
     line_leg_id: string
     machine_family_id: string
-    machine_family: { id: string; code: string; name: string; supplier?: string | null } | null
+    machine_family: {
+      id: string
+      code: string
+      name: string
+      supplier?: string | null
+      uses_hmi_station_codes?: boolean
+    } | null
   }
   leg: { id: string; code: string; name: string; line_id: string; line: { id: string; name: string; code?: string | null } | null } | null
   stationsBySection: Record<string, MachineFamilyStation[]>
 }
 
 type ContextSopsResponse = {
-  station: { station_code: number; name: string; section: string } | null
+  station: { id: string; station_code: number; name: string; section: string } | null
   results: {
     machine: { station: SOP[]; general: SOP[] }
     leg: { station: SOP[]; general: SOP[] }
     line: { station: SOP[]; general: SOP[] }
     family: { station: SOP[]; general: SOP[] }
   }
+}
+
+const SOP_SCOPE_ORDER = ['machine', 'leg', 'line', 'family'] as const
+
+type ScopeResults = ContextSopsResponse['results']
+
+/** One row per SOP: machine → leg → line → family (most specific wins order). */
+function mergeSopsDeduped(
+  results: ScopeResults,
+  bucket: 'general' | 'station'
+): SOP[] {
+  const seen = new Set<string>()
+  const out: SOP[] = []
+  for (const scope of SOP_SCOPE_ORDER) {
+    const list = results[scope]?.[bucket] ?? []
+    for (const sop of list) {
+      if (seen.has(sop.id)) continue
+      seen.add(sop.id)
+      out.push(sop)
+    }
+  }
+  return out
 }
 
 function SopLink({ sop }: { sop: SOP }) {
@@ -60,7 +91,7 @@ export default function OpsMachinePage() {
   const [shareOpen, setShareOpen] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const [zoneLinkCopied, setZoneLinkCopied] = useState(false)
-  const initStationFromUrlDoneRef = useRef(false)
+  const urlSeedKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     void (async () => {
@@ -80,16 +111,34 @@ export default function OpsMachinePage() {
     })()
   }, [machineId, router, supabase])
 
-  // Allow deep-linking into a machine + station (zone) view via `?stationCode=123`.
   useEffect(() => {
-    if (initStationFromUrlDoneRef.current) return
-    const raw = searchParams.get('stationCode')
-    if (raw != null && raw.trim() !== '') {
-      const n = Number(raw)
-      if (Number.isFinite(n)) setStationInput(String(n))
+    urlSeedKeyRef.current = null
+  }, [machineId])
+
+  const usesHmiStationCodes = ctx?.machine.machine_family?.uses_hmi_station_codes === true
+
+  // Deep-link: ?stationCode= for HMI families (Stampac), ?stationId= for name-only zones.
+  // useLayoutEffect so stationInput is updated before URL-sync useEffect runs (avoids clearing params).
+  useLayoutEffect(() => {
+    if (!ctx) return
+    const key = `${machineId}|${searchParams.toString()}`
+    if (urlSeedKeyRef.current === key) return
+    const usesHmi = ctx.machine.machine_family?.uses_hmi_station_codes === true
+    if (usesHmi) {
+      const raw = searchParams.get('stationCode')
+      if (raw != null && raw.trim() !== '' && Number.isFinite(Number(raw))) {
+        setStationInput(raw.trim())
+      } else {
+        setStationInput('')
+      }
+    } else {
+      const raw = searchParams.get('stationId')
+      const id = raw?.trim() ?? ''
+      if (id && STATION_ID_RE.test(id)) setStationInput(id)
+      else setStationInput('')
     }
-    initStationFromUrlDoneRef.current = true
-  }, [searchParams])
+    urlSeedKeyRef.current = key
+  }, [ctx, machineId, searchParams])
 
   const sections = useMemo(() => Object.keys(ctx?.stationsBySection ?? {}).sort(), [ctx])
   const hasStations = sections.length > 0
@@ -103,26 +152,42 @@ export default function OpsMachinePage() {
   }, [ctx])
 
   const stationCode = useMemo(() => {
+    if (!usesHmiStationCodes) return null
     const t = stationInput.trim()
     if (!t) return null
     const n = Number(t)
     return Number.isFinite(n) ? n : null
-  }, [stationInput])
+  }, [stationInput, usesHmiStationCodes])
+
+  const stationIdParam = useMemo(() => {
+    if (usesHmiStationCodes) return null
+    const t = stationInput.trim()
+    if (!t || !STATION_ID_RE.test(t)) return null
+    return t
+  }, [stationInput, usesHmiStationCodes])
 
   const selectedStation = useMemo(() => {
-    if (stationCode == null) return null
-    return stationsFlat.find((s) => s.station_code === stationCode) ?? null
-  }, [stationsFlat, stationCode])
+    if (usesHmiStationCodes) {
+      if (stationCode == null) return null
+      return stationsFlat.find((s) => s.station_code === stationCode) ?? null
+    }
+    if (stationIdParam == null) return null
+    return stationsFlat.find((s) => s.id === stationIdParam) ?? null
+  }, [stationsFlat, usesHmiStationCodes, stationCode, stationIdParam])
 
   const filteredStationOptions = useMemo(() => {
     const q = stationQuery.trim().toLowerCase()
     if (!q) return stationsFlat
     return stationsFlat.filter((s) => {
-      const code = String(s.station_code)
       const name = (s.name ?? '').toLowerCase()
-      return code.includes(q) || name.includes(q)
+      const section = String(s.section ?? '').toLowerCase()
+      if (usesHmiStationCodes) {
+        const code = String(s.station_code)
+        return code.includes(q) || name.includes(q) || section.includes(q)
+      }
+      return name.includes(q) || section.includes(q)
     })
-  }, [stationQuery, stationsFlat])
+  }, [stationQuery, stationsFlat, usesHmiStationCodes])
 
   useEffect(() => {
     if (!ctx) return
@@ -130,7 +195,9 @@ export default function OpsMachinePage() {
       setSopsLoading(true)
       try {
         const qs = new URLSearchParams({ machineId: ctx.machine.id })
-        if (stationCode != null) qs.set('stationCode', String(stationCode))
+        const uses = ctx.machine.machine_family?.uses_hmi_station_codes === true
+        if (uses && stationCode != null) qs.set('stationCode', String(stationCode))
+        if (!uses && stationIdParam) qs.set('stationId', stationIdParam)
         const res = await fetch(`/api/context/sops?${qs.toString()}`)
         const body = (await res.json()) as ContextSopsResponse
         setSops(body)
@@ -138,18 +205,30 @@ export default function OpsMachinePage() {
         setSopsLoading(false)
       }
     })()
-  }, [ctx, stationCode])
+  }, [ctx, stationCode, stationIdParam])
 
   // Keep URL in sync so copied links / QR open the same view.
   useEffect(() => {
-    const current = searchParams.get('stationCode')
-    const desired = stationCode != null ? String(stationCode) : null
-    if ((current ?? null) === desired) return
+    if (!ctx) return
+    const uses = ctx.machine.machine_family?.uses_hmi_station_codes === true
+    const currentCode = searchParams.get('stationCode')
+    const currentId = searchParams.get('stationId')
+    if (uses) {
+      const desired = stationCode != null ? String(stationCode) : null
+      if ((currentCode ?? null) === desired && !currentId) return
+      const qs = new URLSearchParams()
+      if (desired != null) qs.set('stationCode', desired)
+      const suffix = qs.toString() ? `?${qs.toString()}` : ''
+      router.replace(`/ops/machine/${encodeURIComponent(machineId)}${suffix}`)
+      return
+    }
+    const desiredId = stationIdParam
+    if ((currentId ?? null) === (desiredId ?? null) && !currentCode) return
     const qs = new URLSearchParams()
-    if (desired != null) qs.set('stationCode', desired)
+    if (desiredId) qs.set('stationId', desiredId)
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
     router.replace(`/ops/machine/${encodeURIComponent(machineId)}${suffix}`)
-  }, [machineId, router, searchParams, stationCode])
+  }, [ctx, machineId, router, searchParams, stationCode, stationIdParam])
 
   const machineContextUrl = useMemo(() => {
     const base = getPublicSiteOrigin()
@@ -158,11 +237,17 @@ export default function OpsMachinePage() {
   }, [machineId])
 
   const machineZoneContextUrl = useMemo(() => {
-    if (!machineContextUrl) return ''
-    if (stationCode == null) return ''
-    const qs = new URLSearchParams({ stationCode: String(stationCode) })
+    if (!machineContextUrl || !ctx) return ''
+    const uses = ctx.machine.machine_family?.uses_hmi_station_codes === true
+    if (uses) {
+      if (stationCode == null) return ''
+      const qs = new URLSearchParams({ stationCode: String(stationCode) })
+      return `${machineContextUrl}?${qs.toString()}`
+    }
+    if (stationIdParam == null) return ''
+    const qs = new URLSearchParams({ stationId: stationIdParam })
     return `${machineContextUrl}?${qs.toString()}`
-  }, [machineContextUrl, stationCode])
+  }, [machineContextUrl, ctx, stationCode, stationIdParam])
 
   async function copyText(text: string): Promise<boolean> {
     if (!text) return false
@@ -268,7 +353,11 @@ export default function OpsMachinePage() {
                   <input
                     value={stationQuery}
                     onChange={(e) => setStationQuery(e.target.value)}
-                    placeholder="Search by number or name…"
+                    placeholder={
+                      usesHmiStationCodes
+                        ? 'Search by number or name…'
+                        : 'Search zone name…'
+                    }
                     className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
                     inputMode="search"
                     autoFocus
@@ -286,13 +375,15 @@ export default function OpsMachinePage() {
                     All SOPs
                   </button>
                   {filteredStationOptions.map((st) => {
-                    const active = stationCode === st.station_code
+                    const active = selectedStation?.id === st.id
                     return (
                       <button
                         key={st.id}
                         type="button"
                         onClick={() => {
-                          setStationInput(String(st.station_code))
+                          setStationInput(
+                            usesHmiStationCodes ? String(st.station_code) : st.id
+                          )
                           setStationPickerOpen(false)
                         }}
                         className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
@@ -300,7 +391,8 @@ export default function OpsMachinePage() {
                         }`}
                       >
                         <div className="font-semibold text-gray-900 dark:text-gray-100">
-                          {active ? '✓ ' : ''}{st.station_code} — {st.name}
+                          {active ? '✓ ' : ''}
+                          {usesHmiStationCodes ? `${st.station_code} — ${st.name}` : st.name}
                         </div>
                         {(st.section || st._section) ? (
                           <div className="text-xs text-gray-600 dark:text-gray-400">
@@ -419,7 +511,7 @@ export default function OpsMachinePage() {
                 ) : null}
               </div>
 
-              {stationCode != null && machineZoneContextUrl ? (
+              {selectedStation != null && machineZoneContextUrl ? (
                 <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
                   <div className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                     Zone / station link
@@ -448,7 +540,9 @@ export default function OpsMachinePage() {
                     onClick={() =>
                       void downloadQrPng(
                         machineZoneContextUrl,
-                        `machine-${ctx.machine.code ?? ctx.machine.id}-station-${stationCode}-qr.png`
+                        `machine-${ctx.machine.code ?? ctx.machine.id}-zone-${
+                          stationCode ?? stationIdParam ?? 'sel'
+                        }-qr.png`
                       )
                     }
                     className="mt-2 w-full flex flex-col items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 py-3 px-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors min-h-[48px]"
@@ -472,10 +566,12 @@ export default function OpsMachinePage() {
           ) : null}
         </div>
 
-        {stationCode != null && sops?.station ? (
+        {selectedStation != null && sops?.station ? (
           <div className="p-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20">
             <div className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-              Station {sops.station.station_code}: {sops.station.name}
+              {usesHmiStationCodes
+                ? `Station ${sops.station.station_code}: ${sops.station.name}`
+                : `Zone: ${sops.station.name}`}
             </div>
             <div className="text-xs text-amber-800/80 dark:text-amber-200/80">
               Section: {sops.station.section}
@@ -483,65 +579,34 @@ export default function OpsMachinePage() {
           </div>
         ) : null}
 
-        {/* SOP list by priority */}
+        {/* SOP list: one deduped list (machine → leg → line → family), same pattern with or without a zone */}
         {(() => {
           const results = sops?.results
           if (!results) return null
 
-          const scopes = ['machine', 'leg', 'line', 'family'] as const
-          const scopeLabelBy: Record<(typeof scopes)[number], string> = {
-            machine: 'This machine',
-            leg: 'This leg',
-            line: 'This line',
-            family: 'Standard (machine type)',
-          }
+          const list =
+            selectedStation != null
+              ? mergeSopsDeduped(results, 'station')
+              : mergeSopsDeduped(results, 'general')
 
-          // With a station selected: show only the highest-priority scope that has station-matched SOPs.
-          if (stationCode != null) {
-            const first = scopes.find((scope) => (results[scope]?.station?.length ?? 0) > 0) ?? null
-            if (!first) {
-              return (
-                <div className="text-sm text-gray-600 dark:text-gray-400">
-                  There is no SOP assigned to this section yet.
-                </div>
-              )
-            }
-            const list = results[first]!.station
+          if (list.length === 0) {
             return (
-              <div className="space-y-2">
-                <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100">
-                  {scopeLabelBy[first]}
-                </h2>
-                <div className="space-y-2">
-                  {list.map((sop) => (
-                    <SopLink key={sop.id} sop={sop} />
-                  ))}
-                </div>
+              <div className="text-sm text-gray-600 dark:text-gray-400">
+                {selectedStation != null
+                  ? 'There is no SOP assigned to this section yet.'
+                  : 'No SOPs apply to this machine yet.'}
               </div>
             )
           }
 
-          // No station selected: show the normal general SOP lists for each scope.
           return (
-            <div className="space-y-4">
-              {scopes.map((scope) => {
-                const block = results[scope]
-                if (!block) return null
-                const generalList = block.general ?? []
-                if (generalList.length === 0) return null
-                return (
-                  <div key={scope} className="space-y-2">
-                    <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100">
-                      {scopeLabelBy[scope]}
-                    </h2>
-                    <div className="space-y-2">
-                      {generalList.map((sop) => (
-                        <SopLink key={sop.id} sop={sop} />
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
+            <div className="space-y-2">
+              <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100">SOPs</h2>
+              <div className="space-y-2">
+                {list.map((sop) => (
+                  <SopLink key={sop.id} sop={sop} />
+                ))}
+              </div>
             </div>
           )
         })()}

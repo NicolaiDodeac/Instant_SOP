@@ -204,6 +204,8 @@ export default function EditorPage() {
   const [machineFamilyQuery, setMachineFamilyQuery] = useState('')
   const [machineFamilyPickerOpen, setMachineFamilyPickerOpen] = useState(false)
   const [stationsBySection, setStationsBySection] = useState<Record<string, MachineFamilyStation[]>>({})
+  /** When true, station list shows HMI numbers (e.g. Stampac). */
+  const [stationsUsesHmi, setStationsUsesHmi] = useState(false)
   const [selectedStationIds, setSelectedStationIds] = useState<Set<string>>(new Set())
   const [selectedModuleIds, setSelectedModuleIds] = useState<Set<string>>(new Set())
   const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set())
@@ -427,6 +429,7 @@ export default function EditorPage() {
     const onlyId = selectedMachineFamilyIds.size === 1 ? [...selectedMachineFamilyIds][0] : ''
     if (!onlyId) {
       setStationsBySection({})
+      setStationsUsesHmi(false)
       setSelectedStationIds(new Set())
       return
     }
@@ -437,8 +440,10 @@ export default function EditorPage() {
         )
         if (!res.ok) return
         const body = (await res.json()) as {
+          usesHmiStationCodes?: boolean
           stationsBySection?: Record<string, MachineFamilyStation[]>
         }
+        setStationsUsesHmi(body.usesHmiStationCodes === true)
         setStationsBySection(body.stationsBySection ?? {})
       } catch {
         // ignore
@@ -465,8 +470,9 @@ export default function EditorPage() {
   const filteredStations = stationQuery.trim()
     ? stationListFlat.filter((s) => {
         const q = stationQuery.trim().toLowerCase()
+        const byCode = stationsUsesHmi && String(s.station_code).includes(q)
         return (
-          String(s.station_code).includes(q) ||
+          byCode ||
           s.name.toLowerCase().includes(q) ||
           s.section.toLowerCase().includes(q)
         )
@@ -2672,10 +2678,10 @@ style: kind === 'arrow'
                 )}
               </div>
 
-              {/* Station codes picker */}
+              {/* Stations / zones (HMI code labels only when machine type uses them) */}
               <div className="block">
                 <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
-                  Station codes
+                  {stationsUsesHmi ? 'Station codes' : 'Stations / zones'}
                 </div>
                 <div className="mt-1 relative">
                   <button
@@ -2695,10 +2701,12 @@ style: kind === 'arrow'
                     {selectedMachineFamilyIds.size === 0
                       ? 'Select machine type first…'
                       : selectedMachineFamilyIds.size > 1
-                        ? 'Pick 1 machine type to use station codes…'
+                        ? `Pick 1 machine type to use ${stationsUsesHmi ? 'station codes' : 'zones'}…`
                       : selectedStationIds.size > 0
                         ? `${selectedStationIds.size} selected`
-                        : 'Select station codes…'}
+                        : stationsUsesHmi
+                          ? 'Select station codes…'
+                          : 'Select stations / zones…'}
                   </button>
                   {stationPickerOpen && selectedMachineFamilyIds.size === 1 && (
                     <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
@@ -2706,7 +2714,11 @@ style: kind === 'arrow'
                         <input
                           value={stationQuery}
                           onChange={(e) => setStationQuery(e.target.value)}
-                          placeholder="Search station codes… (e.g. 2400, sealing)"
+                          placeholder={
+                            stationsUsesHmi
+                              ? 'Search codes or names… (e.g. 2400, sealing)'
+                              : 'Search zone names…'
+                          }
                           className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
                           inputMode="search"
                           autoFocus
@@ -2742,7 +2754,8 @@ style: kind === 'arrow'
                                         checked ? 'bg-blue-50 dark:bg-blue-900/20' : ''
                                       }`}
                                     >
-                                      {checked ? '✓ ' : ''}{s.station_code} {s.name}
+                                      {checked ? '✓ ' : ''}
+                                      {stationsUsesHmi ? `${s.station_code} ${s.name}` : s.name}
                                     </button>
                                   )
                                 })}
@@ -2782,7 +2795,7 @@ style: kind === 'arrow'
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-sm touch-target"
                         >
                           <span className="text-gray-900 dark:text-gray-100">
-                            {st.station_code} {st.name}
+                            {stationsUsesHmi ? `${st.station_code} ${st.name}` : st.name}
                           </span>
                           <span className="text-gray-600 dark:text-gray-400">×</span>
                         </button>

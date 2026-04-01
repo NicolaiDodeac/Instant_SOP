@@ -1,15 +1,19 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useEffect, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { Line, LineLeg, Machine } from '@/lib/types'
 
+const TRAINING_MODULE_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 type TreeLine = Line & { legs: Array<LineLeg & { machines: Machine[] }> }
 
-export default function OpsSelectPage() {
+function OpsSelectPageInner() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const supabase = useSupabaseClient()
 
   const [lines, setLines] = useState<TreeLine[]>([])
@@ -17,6 +21,7 @@ export default function OpsSelectPage() {
 
   const [lineId, setLineId] = useState<string>('')
   const [legId, setLegId] = useState<string>('')
+  const [trainingModuleId, setTrainingModuleId] = useState<string>('')
   const [machineId, setMachineId] = useState<string>('')
 
   const [linePickerOpen, setLinePickerOpen] = useState(false)
@@ -40,6 +45,16 @@ export default function OpsSelectPage() {
     })()
   }, [router, supabase])
 
+  const trainingModuleIdFromUrl = searchParams.get('trainingModuleId')?.trim() ?? ''
+
+  useEffect(() => {
+    setTrainingModuleId(
+      trainingModuleIdFromUrl && TRAINING_MODULE_ID_RE.test(trainingModuleIdFromUrl)
+        ? trainingModuleIdFromUrl
+        : ''
+    )
+  }, [trainingModuleIdFromUrl])
+
   const selectedLine = useMemo(() => lines.find((l) => l.id === lineId) ?? null, [lines, lineId])
   const legs = selectedLine?.legs ?? []
   const selectedLeg = useMemo(() => legs.find((l) => l.id === legId) ?? null, [legs, legId])
@@ -50,7 +65,7 @@ export default function OpsSelectPage() {
   const filteredMachines = machines
 
   useEffect(() => {
-    // Reset dependent selects
+    // Reset dependent selects (training module comes from dashboard URL; keep it)
     setLegId('')
     setMachineId('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -61,8 +76,12 @@ export default function OpsSelectPage() {
   }, [legId])
 
   useEffect(() => {
-    if (machineId) router.push(`/ops/machine/${machineId}`)
-  }, [machineId, router])
+    if (!machineId) return
+    const qs = new URLSearchParams()
+    if (trainingModuleId) qs.set('trainingModuleId', trainingModuleId)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    router.push(`/ops/machine/${encodeURIComponent(machineId)}${suffix}`)
+  }, [machineId, trainingModuleId, router])
 
   if (loading) {
     return (
@@ -87,6 +106,9 @@ export default function OpsSelectPage() {
             <h1 className="text-xl font-bold truncate">Line specific search</h1>
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
               Choose your line, leg, then machine.
+              {trainingModuleId
+                ? ' Training topic filter is on (from dashboard).'
+                : ''}
             </p>
           </div>
         </div>
@@ -252,3 +274,16 @@ export default function OpsSelectPage() {
   )
 }
 
+export default function OpsSelectPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+          <p className="text-gray-500">Loading…</p>
+        </div>
+      }
+    >
+      <OpsSelectPageInner />
+    </Suspense>
+  )
+}

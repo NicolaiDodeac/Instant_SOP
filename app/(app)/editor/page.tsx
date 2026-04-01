@@ -25,6 +25,7 @@ export default function EditorListPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     loadMe()
@@ -119,6 +120,7 @@ export default function EditorListPage() {
       setShowCreate(false)
       setNewTitle('')
       setCreateError(null)
+      // Let the editor start by creating steps; routing is chosen at publish time.
       router.push(`/editor/${data.id}`)
     }
   }
@@ -249,13 +251,30 @@ export default function EditorListPage() {
           <h2 className="text-lg font-semibold mb-2">
             {isSuperUser ? 'All SOPs (edit)' : 'Your SOPs'}
           </h2>
+          <div className="mb-3">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search SOP title or number… (e.g. 1207)"
+              className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target text-base"
+              aria-label="Search SOPs"
+              inputMode="search"
+            />
+          </div>
           {sops.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               No SOPs yet. Create one above.
             </div>
           ) : (
             <div className="space-y-2">
-              {sops.map((sop) => {
+              {sops
+                .filter((s) => {
+                  const q = search.trim().toLowerCase()
+                  if (!q) return true
+                  const num = s.sop_number != null ? String(s.sop_number) : ''
+                  return (s.title ?? '').toLowerCase().includes(q) || num.includes(q)
+                })
+                .map((sop) => {
                 const canDeleteSop = currentUserId === sop.owner || isSuperUser
                 return (
                   <div
@@ -264,7 +283,10 @@ export default function EditorListPage() {
                     className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer touch-target flex items-center justify-between gap-2"
                   >
                     <div className="min-w-0 flex-1">
-                      <h3 className="font-semibold truncate">{sop.title}</h3>
+                      <h3 className="font-semibold truncate">
+                        {sop.sop_number != null ? `SOP ${sop.sop_number} — ` : ''}
+                        {sop.title}
+                      </h3>
                       <p className="text-sm text-gray-600 dark:text-gray-400">
                         {sop.published ? 'Published' : 'Draft'} •{' '}
                         {formatSopListDate(sop.created_at)}

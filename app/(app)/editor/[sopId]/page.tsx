@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
-import { useRouter, useParams } from 'next/navigation'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
 import {
@@ -43,6 +43,8 @@ import { fetchSignedMediaUrl } from '@/lib/fetch-signed-urls'
 import { nanoid } from 'nanoid'
 import Image from 'next/image'
 import VideoCapture from '@/components/VideoCapture'
+import type { MachineFamily, MachineFamilyStation, TrainingModule } from '@/lib/types'
+import type { Line, LineLeg } from '@/lib/types'
 
 const CUT_ICON_SRC = '/Film%20Editing.png'
 const SPEED_ICON_SRC = '/timer.png'
@@ -146,6 +148,7 @@ export default function EditorPage() {
   const params = useParams()
   const sopId = params.sopId as string
   const router = useRouter()
+  const searchParams = useSearchParams()
   const supabase = useSupabaseClient()
 
   const [sop, setSop] = useState<SOP | null>(null)
@@ -186,11 +189,103 @@ export default function EditorPage() {
   const [speedError, setSpeedError] = useState<string | null>(null)
   const [playbackRate, setPlaybackRate] = useState(1)
   const stepInstructionsRef = useRef<string>('')
+  const titleTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
   const canEdit = isOwner || isSuperUser === true
   const editAsDraft = canEdit && loadedFromServer
   const [reorderMode, setReorderMode] = useState(false)
   const [reorderOrderIds, setReorderOrderIds] = useState<string[] | null>(null)
+
+  // Attachments (machine family / stations / modules) — used for operator routing.
+  const [machineFamilies, setMachineFamilies] = useState<MachineFamily[]>([])
+  const [trainingModules, setTrainingModules] = useState<TrainingModule[]>([])
+  const [linesTree, setLinesTree] = useState<Array<Line & { legs: Array<LineLeg> }>>([])
+  const [selectedMachineFamilyIds, setSelectedMachineFamilyIds] = useState<Set<string>>(new Set())
+  const [machineFamilyQuery, setMachineFamilyQuery] = useState('')
+  const [machineFamilyPickerOpen, setMachineFamilyPickerOpen] = useState(false)
+  const [stationsBySection, setStationsBySection] = useState<Record<string, MachineFamilyStation[]>>({})
+  const [selectedStationIds, setSelectedStationIds] = useState<Set<string>>(new Set())
+  const [selectedModuleIds, setSelectedModuleIds] = useState<Set<string>>(new Set())
+  const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set())
+  const [selectedLineLegIds, setSelectedLineLegIds] = useState<Set<string>>(new Set())
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false)
+  const [attachmentsSaving, setAttachmentsSaving] = useState(false)
+  const [attachmentsSaveStatus, setAttachmentsSaveStatus] = useState<
+    'idle' | 'saving' | 'saved' | 'error'
+  >('idle')
+  const [modulePickerOpen, setModulePickerOpen] = useState(false)
+  const [moduleQuery, setModuleQuery] = useState('')
+  const [stationPickerOpen, setStationPickerOpen] = useState(false)
+  const [stationQuery, setStationQuery] = useState('')
+  const [linePickerOpen, setLinePickerOpen] = useState(false)
+  const [lineQuery, setLineQuery] = useState('')
+  const [legPickerOpen, setLegPickerOpen] = useState(false)
+  const [legQuery, setLegQuery] = useState('')
+
+  function setKeyOfSet(s: Set<string>): string {
+    return [...s].sort().join(',')
+  }
+
+  function routingKeyFromIds(ids: {
+    trainingModuleIds?: string[]
+    machineFamilyIds?: string[]
+    stationIds?: string[]
+    lineIds?: string[]
+    lineLegIds?: string[]
+  }): string {
+    const norm = (v?: string[]) => (v ?? []).slice().sort().join(',')
+    return [
+      `tm:${norm(ids.trainingModuleIds)}`,
+      `mf:${norm(ids.machineFamilyIds)}`,
+      `st:${norm(ids.stationIds)}`,
+      `ln:${norm(ids.lineIds)}`,
+      `lg:${norm(ids.lineLegIds)}`,
+    ].join('|')
+  }
+
+  const [savedRoutingKey, setSavedRoutingKey] = useState<string>(() =>
+    routingKeyFromIds({})
+  )
+
+  const currentRoutingKey = useMemo(() => {
+    return [
+      `tm:${setKeyOfSet(selectedModuleIds)}`,
+      `mf:${setKeyOfSet(selectedMachineFamilyIds)}`,
+      `st:${setKeyOfSet(selectedStationIds)}`,
+      `ln:${setKeyOfSet(selectedLineIds)}`,
+      `lg:${setKeyOfSet(selectedLineLegIds)}`,
+    ].join('|')
+  }, [
+    selectedModuleIds,
+    selectedMachineFamilyIds,
+    selectedStationIds,
+    selectedLineIds,
+    selectedLineLegIds,
+  ])
+
+  const routingDirty = currentRoutingKey !== savedRoutingKey
+
+  useEffect(() => {
+    if (routingDirty) setAttachmentsSaveStatus('idle')
+  }, [routingDirty])
+
+  // IMPORTANT: Do not navigate (router.replace) when switching tabs.
+  // Navigation can remount this page, resetting local state and causing "stuck loading" + lost routing edits.
+  const [tab, setTab] = useState<'routing' | 'steps'>(() => {
+    const initial = (searchParams.get('tab') ?? 'steps') as 'routing' | 'steps'
+    return initial === 'routing' ? 'routing' : 'steps'
+  })
+
+  const goTab = (next: 'routing' | 'steps') => {
+    setTab(next)
+    try {
+      const url = new URL(window.location.href)
+      url.searchParams.set('tab', next)
+      window.history.replaceState(null, '', url.toString())
+    } catch {
+      // ignore (e.g., during SSR)
+    }
+  }
 
   useEffect(() => {
     void supabase.auth.getUser().then((res: { data?: { user?: { id: string } } }) => {
@@ -251,6 +346,203 @@ export default function EditorPage() {
   useEffect(() => {
     loadSOP()
   }, [sopId])
+
+  // Allow SOP title to wrap to a second line (textarea autosize).
+  useEffect(() => {
+    const el = titleTextareaRef.current
+    if (!el) return
+    el.style.height = '0px'
+    el.style.height = `${el.scrollHeight}px`
+  }, [sop?.title])
+
+  // Load lookup data (families/modules) + current SOP attachments.
+  useEffect(() => {
+    if (!loadedFromServer) return
+    if (!canEdit) return
+    void (async () => {
+      setAttachmentsLoading(true)
+      try {
+        const [treeRes, attRes] = await Promise.all([
+          fetch('/api/context/tree'),
+          fetch(`/api/sops/${encodeURIComponent(sopId)}/attachments`),
+        ])
+        if (treeRes.ok) {
+          const t = (await treeRes.json()) as {
+            lines?: Array<Line & { legs: Array<LineLeg & { machines?: unknown[] }> }>
+            machineFamilies?: MachineFamily[]
+            trainingModules?: TrainingModule[]
+          }
+          setMachineFamilies(t.machineFamilies ?? [])
+          setTrainingModules(t.trainingModules ?? [])
+          setLinesTree(
+            (t.lines ?? []).map((l) => ({
+              id: l.id,
+              code: l.code ?? null,
+              name: l.name,
+              active: l.active,
+              legs: (l.legs ?? []).map((leg) => ({
+                id: leg.id,
+                line_id: (leg as any).line_id ?? l.id,
+                code: leg.code,
+                name: leg.name,
+                active: leg.active,
+              })),
+            }))
+          )
+        }
+        if (attRes.ok) {
+          const a = (await attRes.json()) as {
+            trainingModuleIds?: string[]
+            machineFamilyIds?: string[]
+            stationIds?: string[]
+            lineIds?: string[]
+            lineLegIds?: string[]
+          }
+          setSelectedMachineFamilyIds(new Set(a.machineFamilyIds ?? []))
+          setSelectedStationIds(new Set(a.stationIds ?? []))
+          setSelectedModuleIds(new Set(a.trainingModuleIds ?? []))
+          setSelectedLineIds(new Set(a.lineIds ?? []))
+          setSelectedLineLegIds(new Set(a.lineLegIds ?? []))
+          setSavedRoutingKey(
+            routingKeyFromIds({
+              trainingModuleIds: a.trainingModuleIds ?? [],
+              machineFamilyIds: a.machineFamilyIds ?? [],
+              stationIds: a.stationIds ?? [],
+              lineIds: a.lineIds ?? [],
+              lineLegIds: a.lineLegIds ?? [],
+            })
+          )
+        } else {
+          setSavedRoutingKey(routingKeyFromIds({}))
+        }
+      } finally {
+        setAttachmentsLoading(false)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadedFromServer, canEdit, sopId])
+
+  // Load stations when family changes.
+  useEffect(() => {
+    const onlyId = selectedMachineFamilyIds.size === 1 ? [...selectedMachineFamilyIds][0] : ''
+    if (!onlyId) {
+      setStationsBySection({})
+      setSelectedStationIds(new Set())
+      return
+    }
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/context/family-stations?machineFamilyId=${encodeURIComponent(onlyId)}`
+        )
+        if (!res.ok) return
+        const body = (await res.json()) as {
+          stationsBySection?: Record<string, MachineFamilyStation[]>
+        }
+        setStationsBySection(body.stationsBySection ?? {})
+      } catch {
+        // ignore
+      }
+    })()
+  }, [selectedMachineFamilyIds])
+
+  const selectedMachineFamilyIdSingle =
+    selectedMachineFamilyIds.size === 1 ? [...selectedMachineFamilyIds][0] : ''
+  const selectedMachineFamily =
+    machineFamilies.find((f) => f.id === selectedMachineFamilyIdSingle) ?? null
+  const filteredMachineFamilies = machineFamilyQuery.trim()
+    ? machineFamilies.filter((f) =>
+        f.name.toLowerCase().includes(machineFamilyQuery.trim().toLowerCase())
+      )
+    : machineFamilies
+
+  const stationListFlat = Object.values(stationsBySection).flat()
+  const filteredModules = moduleQuery.trim()
+    ? trainingModules.filter((m) =>
+        m.name.toLowerCase().includes(moduleQuery.trim().toLowerCase())
+      )
+    : trainingModules
+  const filteredStations = stationQuery.trim()
+    ? stationListFlat.filter((s) => {
+        const q = stationQuery.trim().toLowerCase()
+        return (
+          String(s.station_code).includes(q) ||
+          s.name.toLowerCase().includes(q) ||
+          s.section.toLowerCase().includes(q)
+        )
+      })
+    : stationListFlat
+  const filteredStationsBySection = useMemo(() => {
+    if (!selectedMachineFamilyIdSingle) return {} as Record<string, MachineFamilyStation[]>
+    const by: Record<string, MachineFamilyStation[]> = {}
+    for (const s of filteredStations) {
+      const key = s.section || 'Other'
+      by[key] = by[key] ?? []
+      by[key].push(s)
+    }
+    return by
+  }, [filteredStations, selectedMachineFamilyIdSingle])
+
+  const filteredLines = lineQuery.trim()
+    ? linesTree.filter((l) =>
+        l.name.toLowerCase().includes(lineQuery.trim().toLowerCase()) ||
+        (l.code ?? '').toLowerCase().includes(lineQuery.trim().toLowerCase())
+      )
+    : linesTree
+
+  const availableLegs = useMemo(() => {
+    const ids = selectedLineIds
+    const all = linesTree.flatMap((l) =>
+      ids.size === 0 || ids.has(l.id) ? l.legs.map((leg) => ({ ...leg, _lineName: l.name })) : []
+    ) as Array<LineLeg & { _lineName: string }>
+    return all
+  }, [linesTree, selectedLineIds])
+
+  const filteredLegs = legQuery.trim()
+    ? availableLegs.filter((leg) => {
+        const q = legQuery.trim().toLowerCase()
+        return (
+          leg.name.toLowerCase().includes(q) ||
+          leg.code.toLowerCase().includes(q) ||
+          leg._lineName.toLowerCase().includes(q)
+        )
+      })
+    : availableLegs
+
+  async function saveAttachments() {
+    if (!canEdit || !loadedFromServer) return
+    if (isOffline) return
+    setAttachmentsSaving(true)
+    setAttachmentsSaveStatus('saving')
+    try {
+      const payload = {
+        trainingModuleIds: [...selectedModuleIds],
+        machineFamilyIds: [...selectedMachineFamilyIds],
+        stationIds: [...selectedStationIds],
+        lineIds: [...selectedLineIds],
+        lineLegIds: [...selectedLineLegIds],
+        machineIds: [],
+      }
+      const res = await fetch(`/api/sops/${encodeURIComponent(sopId)}/attachments`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        console.error('Failed to save attachments:', res.status, body)
+        setAttachmentsSaveStatus('error')
+      } else {
+        setSavedRoutingKey(currentRoutingKey)
+        setAttachmentsSaveStatus('saved')
+        window.setTimeout(() => {
+          setAttachmentsSaveStatus((s) => (s === 'saved' ? 'idle' : s))
+        }, 1500)
+      }
+    } finally {
+      setAttachmentsSaving(false)
+    }
+  }
 
   async function loadSOP() {
     try {
@@ -1594,12 +1886,40 @@ style: kind === 'arrow'
   async function handlePublishOrUpdate() {
     if (!sop) return
 
+    if (steps.length < 1) {
+      alert('Add at least 1 step before publishing.')
+      return
+    }
+
+    const hasRoutingSelection =
+      selectedModuleIds.size > 0 ||
+      selectedMachineFamilyIds.size > 0 ||
+      selectedStationIds.size > 0 ||
+      selectedLineIds.size > 0 ||
+      selectedLineLegIds.size > 0
+
     if (editAsDraft) {
       // 1) Sync the full draft (title, steps, annotations) to the DB
       await handleUpdateDraft()
 
       // 2) If SOP is not published yet, publish it now so it appears on the dashboard
       if (!sop.published) {
+        // Routing is chosen at publish time so operators can find it.
+        if (isOffline) {
+          alert('You are offline. Connect to the internet to publish this SOP.')
+          return
+        }
+        if (!hasRoutingSelection) {
+          // Let user decide: pick routing or use "Skip & Publish" from routing tab.
+          alert('Choose routing, or use Skip & Publish.')
+          // Draft sync may have succeeded; do not imply publish success.
+          setUpdateStatus('idle')
+          goTab('routing')
+          return
+        }
+        if (routingDirty) {
+          await saveAttachments()
+        }
         const shareSlug = sop.share_slug || nanoid(8)
         const { error } = await supabase
           .from('sops')
@@ -1636,6 +1956,82 @@ style: kind === 'arrow'
         .eq('id', sop.id)
       if (!error) setUpdateStatus('updated')
       setTimeout(() => setUpdateStatus('idle'), 2000)
+      return
+    }
+
+    // First publish (non-draft editing path): require routing choice.
+    if (isOffline) {
+      alert('You are offline. Connect to the internet to publish this SOP.')
+      return
+    }
+    if (!hasRoutingSelection) {
+      alert('Choose routing, or use Skip & Publish.')
+      // Do not imply publish success.
+      setUpdateStatus('idle')
+      goTab('routing')
+      return
+    }
+    if (routingDirty) {
+      await saveAttachments()
+    }
+
+    const shareSlug = sop.share_slug || nanoid(8)
+    const { error } = await supabase
+      .from('sops')
+      .update({
+        published: true,
+        share_slug: shareSlug,
+        ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+      })
+      .eq('id', sop.id)
+
+    if (!error) {
+      setSop({ ...sop, published: true, share_slug: shareSlug })
+    }
+  }
+
+  async function handleSkipAndPublish() {
+    if (!sop) return
+
+    if (steps.length < 1) {
+      alert('Add at least 1 step before publishing.')
+      return
+    }
+
+    if (isOffline) {
+      alert('You are offline. Connect to the internet to publish this SOP.')
+      return
+    }
+
+    if (editAsDraft) {
+      await handleUpdateDraft()
+      if (!sop.published) {
+        const shareSlug = sop.share_slug || nanoid(8)
+        const { error } = await supabase
+          .from('sops')
+          .update({
+            title: sop.title,
+            description: sop.description ?? null,
+            published: true,
+            share_slug: shareSlug,
+            ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+          })
+          .eq('id', sop.id)
+
+        if (!error) {
+          setSop((prev) =>
+            prev ? { ...prev, published: true, share_slug: shareSlug } : prev
+          )
+        }
+      }
+      await deleteDraft(sopId)
+      router.push('/dashboard')
+      return
+    }
+
+    if (sop.published) {
+      // Already published: "skip" doesn't apply; treat as normal update.
+      await handlePublishOrUpdate()
       return
     }
 
@@ -1685,69 +2081,752 @@ style: kind === 'arrow'
       )}
       {/* Sticky header - thin */}
       <div className="z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
-        <div className="flex items-center justify-between px-2 py-1.5 min-h-[44px]">
-          <button
-            onClick={() => router.push('/dashboard')}
-            className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
-            aria-label="Back to dashboard"
-          >
-            ← Back
-          </button>
-          {canEdit ? (
-            <input
-              type="text"
-              value={sop.title}
-              onChange={(e) => {
-                setSop((prev) => (prev ? { ...prev, title: e.target.value } : null))
-                if (editAsDraft) setHasUnsavedChanges(true)
-              }}
-              className="flex-1 min-w-0 text-center font-semibold text-xs px-0.5 py-0.5 bg-transparent border border-transparent rounded focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              placeholder="SOP title"
-            />
-          ) : (
-            <h1 className="flex-1 text-center font-semibold text-xs truncate px-0.5">
-              {sop.title}
-            </h1>
-          )}
-          <div className="flex items-center gap-0.5">
-            {isOffline && (
-              <span className="text-[10px] bg-yellow-200 dark:bg-yellow-800 px-1 py-0.5 rounded">
-                Offline
+        <div className="px-2 py-1.5">
+          {/* Row 1: actions */}
+          <div className="flex items-center gap-2 min-h-[44px]">
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
+              aria-label="Back to dashboard"
+            >
+              ← Back
+            </button>
+
+            {sop?.sop_number != null ? (
+              <span className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200">
+                SOP {sop.sop_number}
               </span>
-            )}
-            {canEdit && (
-              <button
-                onClick={handlePublishOrUpdate}
-                disabled={updateStatus === 'saving'}
-                className={`px-1.5 py-1.5 rounded text-xs min-w-[40px] ${
-                  updateStatus === 'updated'
-                    ? 'bg-yellow-500 text-black'
-                    : updateStatus === 'saving'
-                    ? 'bg-gray-400 dark:bg-gray-600 text-white'
-                    : editAsDraft
-                    ? hasUnsavedChanges
-                      ? 'bg-blue-600 text-white'
+            ) : null}
+
+            <div className="ml-auto flex items-center gap-1 shrink-0">
+              {isOffline && (
+                <span className="text-[10px] bg-yellow-200 dark:bg-yellow-800 px-1 py-0.5 rounded">
+                  Offline
+                </span>
+              )}
+              {(() => {
+                const hasRoutingSelection =
+                  selectedModuleIds.size > 0 ||
+                  selectedMachineFamilyIds.size > 0 ||
+                  selectedStationIds.size > 0 ||
+                  selectedLineIds.size > 0 ||
+                  selectedLineLegIds.size > 0
+                const showContinueOnly = tab === 'steps' && !sop.published && !hasRoutingSelection
+                if (showContinueOnly) return null
+                if (!canEdit || !loadedFromServer) return null
+                return (
+                  <button
+                    type="button"
+                    onClick={() => goTab(tab === 'routing' ? 'steps' : 'routing')}
+                    className="px-1.5 py-1.5 rounded text-xs min-w-[40px] bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                  >
+                    {tab === 'routing' ? '← Steps' : 'Routing →'}
+                  </button>
+                )
+              })()}
+              {canEdit &&
+                loadedFromServer &&
+                tab === 'routing' &&
+                !sop.published &&
+                selectedModuleIds.size === 0 &&
+                selectedMachineFamilyIds.size === 0 &&
+                selectedStationIds.size === 0 &&
+                selectedLineIds.size === 0 &&
+                selectedLineLegIds.size === 0 && (
+                  <button
+                    onClick={handleSkipAndPublish}
+                    disabled={updateStatus === 'saving'}
+                    className="px-1.5 py-1.5 rounded text-xs min-w-[40px] bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                  >
+                    Skip &amp; Publish
+                  </button>
+                )}
+              {canEdit && (
+                <button
+                  onClick={() => {
+                    const hasRoutingSelection =
+                      selectedModuleIds.size > 0 ||
+                      selectedMachineFamilyIds.size > 0 ||
+                      selectedStationIds.size > 0 ||
+                      selectedLineIds.size > 0 ||
+                      selectedLineLegIds.size > 0
+                    const isFirstPublish = !sop.published
+                    if (tab === 'steps' && isFirstPublish && !hasRoutingSelection) {
+                      if (steps.length < 1) {
+                        alert('Add at least 1 step before continuing.')
+                        return
+                      }
+                      goTab('routing')
+                      return
+                    }
+                    void handlePublishOrUpdate()
+                  }}
+                  disabled={updateStatus === 'saving' || steps.length < 1}
+                  className={`px-1.5 py-1.5 rounded text-xs min-w-[40px] ${
+                    updateStatus === 'updated'
+                      ? 'bg-yellow-500 text-black'
+                      : updateStatus === 'saving'
+                      ? 'bg-gray-400 dark:bg-gray-600 text-white'
+                      : editAsDraft
+                      ? hasUnsavedChanges
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-300 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
+                      : sop.published
+                      ? 'bg-green-600 text-white'
                       : 'bg-gray-300 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
-                    : sop.published
-                    ? 'bg-green-600 text-white'
-                    : 'bg-gray-300 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
-                }`}
-              >
-                {updateStatus === 'saving'
-                  ? 'Saving…'
-                  : updateStatus === 'updated'
-                  ? 'Updated'
-                  : sop.published
-                  ? 'Update'
-                  : 'Publish'}
-              </button>
+                  }`}
+                >
+                  {(() => {
+                    if (steps.length < 1) return 'Add 1 step'
+                    const hasRoutingSelection =
+                      selectedModuleIds.size > 0 ||
+                      selectedMachineFamilyIds.size > 0 ||
+                      selectedStationIds.size > 0 ||
+                      selectedLineIds.size > 0 ||
+                      selectedLineLegIds.size > 0
+                    const isFirstPublish = !sop.published
+                    if (tab === 'steps' && isFirstPublish && !hasRoutingSelection) return 'Continue →'
+                    return updateStatus === 'saving'
+                      ? 'Saving…'
+                      : updateStatus === 'updated'
+                      ? 'Updated'
+                      : sop.published
+                      ? 'Update'
+                      : 'Publish'
+                  })()}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Row 2: title (auto-growing textarea) */}
+          <div className="pb-1 sm:pb-0">
+            {canEdit ? (
+              <textarea
+                ref={titleTextareaRef}
+                rows={1}
+                value={sop.title}
+                onChange={(e) => {
+                  setSop((prev) => (prev ? { ...prev, title: e.target.value } : null))
+                  if (editAsDraft) setHasUnsavedChanges(true)
+                }}
+                onInput={(e) => {
+                  const el = e.currentTarget
+                  el.style.height = '0px'
+                  el.style.height = `${el.scrollHeight}px`
+                }}
+                className="w-full min-w-0 text-center font-semibold text-lg sm:text-base px-0.5 py-1 bg-transparent border border-transparent rounded focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none overflow-hidden leading-tight"
+                placeholder="SOP title"
+              />
+            ) : (
+              <h1 className="w-full min-w-0 text-center font-semibold text-lg sm:text-base break-words px-0.5 py-1 leading-tight">
+                {sop.title}
+              </h1>
             )}
           </div>
         </div>
       </div>
 
-      {/* Step chips: wrap to next line when no space */}
-      <div className="px-2 py-1.5 safe-left safe-right">
+      {/* Routing access (simplified):
+          - New SOP (not published yet): no extra buttons while drafting steps.
+          - Existing SOP updates: single button to jump into routing (and a single "back" button inside routing). */}
+      {/* Routing navigation now lives next to Publish in the header. */}
+
+      {/* Routing (attachments) panel (editor only) */}
+      {canEdit && loadedFromServer && tab === 'routing' && (
+        <div className="px-2 py-2 safe-left safe-right border-b border-gray-200 dark:border-gray-800 bg-white/60 dark:bg-gray-900/60">
+          <div className="max-w-3xl mx-auto">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 break-words leading-tight">
+                  Routing (machine / stations)
+                </div>
+                <div className="text-xs text-gray-600 dark:text-gray-400">
+                  This controls what shows up in <span className="font-semibold">Line specific search</span>.
+                </div>
+              </div>
+              {routingDirty ? (
+                <span className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200">
+                  Unsaved changes
+                </span>
+              ) : null}
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* Machine type picker */}
+              <label className="block">
+                <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Machine type
+                </span>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMachineFamilyPickerOpen((v) => !v)
+                      setMachineFamilyQuery('')
+                      setModulePickerOpen(false)
+                      setStationPickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left"
+                    aria-expanded={machineFamilyPickerOpen}
+                  >
+                    {selectedMachineFamilyIds.size > 0
+                      ? `${selectedMachineFamilyIds.size} selected`
+                      : '(none)'}
+                  </button>
+                  {machineFamilyPickerOpen && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={machineFamilyQuery}
+                          onChange={(e) => setMachineFamilyQuery(e.target.value)}
+                          placeholder="Search machine type…"
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-72 overflow-auto p-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedMachineFamilyIds(new Set())
+                            setSelectedStationIds(new Set())
+                            setMachineFamilyPickerOpen(false)
+                          }}
+                          className="w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800"
+                        >
+                          (none)
+                        </button>
+                        {filteredMachineFamilies.map((f) => (
+                          <button
+                            key={f.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedMachineFamilyIds((prev) => {
+                                const next = new Set(prev)
+                                if (next.has(f.id)) next.delete(f.id)
+                                else next.add(f.id)
+                                return next
+                              })
+                            }}
+                            className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                              selectedMachineFamilyIds.has(f.id)
+                                ? 'bg-blue-50 dark:bg-blue-900/20'
+                                : ''
+                            }`}
+                          >
+                            {selectedMachineFamilyIds.has(f.id) ? '✓ ' : ''}{f.name}
+                          </button>
+                        ))}
+                        {filteredMachineFamilies.length === 0 && (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setMachineFamilyPickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedMachineFamilyIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedMachineFamilyIds].map((id) => {
+                      const fam = machineFamilies.find((f) => f.id === id)
+                      if (!fam) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedMachineFamilyIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">{fam.name}</span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </label>
+
+              {/* Lines picker */}
+              <div className="block">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Lines (optional)
+                </div>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLinePickerOpen((v) => !v)
+                      setLineQuery('')
+                      setMachineFamilyPickerOpen(false)
+                      setModulePickerOpen(false)
+                      setStationPickerOpen(false)
+                      setLegPickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left"
+                    aria-expanded={linePickerOpen}
+                  >
+                    {selectedLineIds.size > 0 ? `${selectedLineIds.size} selected` : 'Select lines…'}
+                  </button>
+                  {linePickerOpen && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={lineQuery}
+                          onChange={(e) => setLineQuery(e.target.value)}
+                          placeholder="Search lines…"
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-72 overflow-auto p-1">
+                        {filteredLines.map((l) => {
+                          const checked = selectedLineIds.has(l.id)
+                          return (
+                            <button
+                              key={l.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedLineIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(l.id)) next.delete(l.id)
+                                  else next.add(l.id)
+                                  return next
+                                })
+                              }
+                              className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                checked ? 'bg-amber-50 dark:bg-amber-900/20' : ''
+                              }`}
+                            >
+                              {checked ? '✓ ' : ''}{l.name}
+                            </button>
+                          )
+                        })}
+                        {filteredLines.length === 0 && (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setLinePickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedLineIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedLineIds].map((id) => {
+                      const line = linesTree.find((l) => l.id === id)
+                      if (!line) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedLineIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">{line.name}</span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Legs picker */}
+              <div className="block">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Legs (optional)
+                </div>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLegPickerOpen((v) => !v)
+                      setLegQuery('')
+                      setMachineFamilyPickerOpen(false)
+                      setModulePickerOpen(false)
+                      setStationPickerOpen(false)
+                      setLinePickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left"
+                    aria-expanded={legPickerOpen}
+                    disabled={linesTree.length === 0}
+                  >
+                    {selectedLineLegIds.size > 0 ? `${selectedLineLegIds.size} selected` : 'Select legs…'}
+                  </button>
+                  {legPickerOpen && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={legQuery}
+                          onChange={(e) => setLegQuery(e.target.value)}
+                          placeholder={selectedLineIds.size > 0 ? 'Search legs…' : 'Search legs… (or pick lines first)'}
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-72 overflow-auto p-1">
+                        {filteredLegs.map((leg) => {
+                          const checked = selectedLineLegIds.has(leg.id)
+                          return (
+                            <button
+                              key={leg.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedLineLegIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(leg.id)) next.delete(leg.id)
+                                  else next.add(leg.id)
+                                  return next
+                                })
+                              }
+                              className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                checked ? 'bg-violet-50 dark:bg-violet-900/20' : ''
+                              }`}
+                            >
+                              {checked ? '✓ ' : ''}{leg._lineName} — {leg.name}
+                            </button>
+                          )
+                        })}
+                        {filteredLegs.length === 0 && (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setLegPickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedLineLegIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedLineLegIds].map((id) => {
+                      const match = availableLegs.find((l) => l.id === id)
+                      if (!match) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedLineLegIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-violet-50 dark:bg-violet-900/20 border border-violet-300 dark:border-violet-800 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">
+                            {match._lineName} — {match.name}
+                          </span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Training modules picker */}
+              <div className="block">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Training modules
+                </div>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModulePickerOpen((v) => !v)
+                      setModuleQuery('')
+                      setMachineFamilyPickerOpen(false)
+                      setStationPickerOpen(false)
+                      setLinePickerOpen(false)
+                      setLegPickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left"
+                    aria-expanded={modulePickerOpen}
+                  >
+                    {selectedModuleIds.size > 0
+                      ? `${selectedModuleIds.size} selected`
+                      : 'Select modules…'}
+                  </button>
+                  {modulePickerOpen && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={moduleQuery}
+                          onChange={(e) => setModuleQuery(e.target.value)}
+                          placeholder="Search modules…"
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-72 overflow-auto p-1">
+                        {filteredModules.map((m) => {
+                          const checked = selectedModuleIds.has(m.id)
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedModuleIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(m.id)) next.delete(m.id)
+                                  else next.add(m.id)
+                                  return next
+                                })
+                              }
+                              className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                checked ? 'bg-emerald-50 dark:bg-emerald-900/20' : ''
+                              }`}
+                            >
+                              {checked ? '✓ ' : ''}{m.name}
+                            </button>
+                          )
+                        })}
+                        {filteredModules.length === 0 && (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setModulePickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedModuleIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedModuleIds].map((id) => {
+                      const mod = trainingModules.find((m) => m.id === id)
+                      if (!mod) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedModuleIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-300 dark:border-emerald-800 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">{mod.name}</span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Station codes picker */}
+              <div className="block">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Station codes
+                </div>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStationPickerOpen((v) => !v)
+                      setStationQuery('')
+                      setMachineFamilyPickerOpen(false)
+                      setModulePickerOpen(false)
+                      setLinePickerOpen(false)
+                      setLegPickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left disabled:opacity-60"
+                    aria-expanded={stationPickerOpen}
+                    disabled={selectedMachineFamilyIds.size !== 1}
+                  >
+                    {selectedMachineFamilyIds.size === 0
+                      ? 'Select machine type first…'
+                      : selectedMachineFamilyIds.size > 1
+                        ? 'Pick 1 machine type to use station codes…'
+                      : selectedStationIds.size > 0
+                        ? `${selectedStationIds.size} selected`
+                        : 'Select station codes…'}
+                  </button>
+                  {stationPickerOpen && selectedMachineFamilyIds.size === 1 && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={stationQuery}
+                          onChange={(e) => setStationQuery(e.target.value)}
+                          placeholder="Search station codes… (e.g. 2400, sealing)"
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-[70vh] overflow-auto p-2 space-y-2">
+                        {Object.keys(filteredStationsBySection).length === 0 ? (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        ) : (
+                          Object.entries(filteredStationsBySection).map(([section, stations]) => (
+                            <div key={section} className="rounded-lg border border-gray-200 dark:border-gray-800 p-2">
+                              <div className="text-xs font-semibold text-gray-800 dark:text-gray-200 mb-1">
+                                {section}
+                              </div>
+                              <div className="space-y-1">
+                                {(stations as MachineFamilyStation[]).map((s: MachineFamilyStation) => {
+                                  const checked = selectedStationIds.has(s.id)
+                                  return (
+                                    <button
+                                      key={s.id}
+                                      type="button"
+                                      onClick={() =>
+                                        setSelectedStationIds((prev) => {
+                                          const next = new Set(prev)
+                                          if (next.has(s.id)) next.delete(s.id)
+                                          else next.add(s.id)
+                                          return next
+                                        })
+                                      }
+                                      className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                        checked ? 'bg-blue-50 dark:bg-blue-900/20' : ''
+                                      }`}
+                                    >
+                                      {checked ? '✓ ' : ''}{s.station_code} {s.name}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setStationPickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedStationIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedStationIds].map((id) => {
+                      const st = stationListFlat.find((s) => s.id === id)
+                      if (!st) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedStationIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">
+                            {st.station_code} {st.name}
+                          </span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <button
+                type="button"
+                onClick={() => void saveAttachments()}
+                disabled={attachmentsSaving || attachmentsLoading || isOffline || !routingDirty}
+                className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-base font-semibold touch-target"
+              >
+                {attachmentsSaving
+                  ? 'Saving…'
+                  : attachmentsSaveStatus === 'saved'
+                  ? 'Saved'
+                  : attachmentsSaveStatus === 'error'
+                  ? 'Save failed — try again'
+                  : 'Save changes'}
+              </button>
+              <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                Choose routing when you’re ready to publish so operators can find it in “Line specific search”.
+              </p>
+            </div>
+
+            {isOffline ? (
+              <div className="mt-2 text-xs text-yellow-700 dark:text-yellow-300">
+                Offline: routing changes require internet to save.
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* In routing mode we hide the step editor below */}
+      {tab === 'routing' ? null : (
+        <>
+          {/* Step chips: wrap to next line when no space */}
+          <div className="px-2 py-1.5 safe-left safe-right">
         <div className="flex flex-wrap gap-2 items-center">
           <DndContext
             sensors={dndSensors}
@@ -1819,6 +2898,7 @@ style: kind === 'arrow'
                   🗑️
                 </button>
               )}
+
             </>
           )}
         </div>
@@ -2289,6 +3369,8 @@ style: kind === 'arrow'
               />
             )}
         </div>
+      )}
+        </>
       )}
     </div>
   )

@@ -107,6 +107,15 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    const trainingModuleIdRaw = request.nextUrl.searchParams.get('trainingModuleId')
+    const trainingModuleId =
+      trainingModuleIdRaw != null && trainingModuleIdRaw.trim() !== ''
+        ? trainingModuleIdRaw.trim()
+        : null
+    if (trainingModuleId && !UUID_RE.test(trainingModuleId)) {
+      return NextResponse.json({ error: 'Invalid trainingModuleId' }, { status: 400 })
+    }
+
     const { data: machineRow } = await supabase
       .from('machines')
       .select('id, line_leg_id, machine_family_id')
@@ -194,6 +203,24 @@ export async function GET(request: NextRequest) {
     const bucketLine = partition(idsLineFiltered)
     const bucketFamily = partition(idsFamily)
 
+    let moduleSopIdSet: Set<string> | null = null
+    let trainingModuleMeta: { id: string; name: string } | null = null
+    if (trainingModuleId) {
+      const [{ data: modRows }, { data: modRow }] = await Promise.all([
+        supabase.from('sop_training_modules').select('sop_id').eq('training_module_id', trainingModuleId),
+        supabase.from('training_modules').select('id, name').eq('id', trainingModuleId).maybeSingle(),
+      ])
+      moduleSopIdSet = new Set((modRows ?? []).map((r: any) => String(r.sop_id)))
+      if (modRow) {
+        trainingModuleMeta = { id: String((modRow as any).id), name: String((modRow as any).name) }
+      }
+    }
+
+    function applyTrainingModule(ids: string[]): string[] {
+      if (!moduleSopIdSet) return ids
+      return ids.filter((id) => moduleSopIdSet!.has(id))
+    }
+
     const [
       machineStation,
       machineGeneral,
@@ -204,14 +231,14 @@ export async function GET(request: NextRequest) {
       familyStation,
       familyGeneral,
     ] = await Promise.all([
-      loadSopsByIds(supabase, bucketMachine.station),
-      loadSopsByIds(supabase, bucketMachine.general),
-      loadSopsByIds(supabase, bucketLeg.station),
-      loadSopsByIds(supabase, bucketLeg.general),
-      loadSopsByIds(supabase, bucketLine.station),
-      loadSopsByIds(supabase, bucketLine.general),
-      loadSopsByIds(supabase, bucketFamily.station),
-      loadSopsByIds(supabase, bucketFamily.general),
+      loadSopsByIds(supabase, applyTrainingModule(bucketMachine.station)),
+      loadSopsByIds(supabase, applyTrainingModule(bucketMachine.general)),
+      loadSopsByIds(supabase, applyTrainingModule(bucketLeg.station)),
+      loadSopsByIds(supabase, applyTrainingModule(bucketLeg.general)),
+      loadSopsByIds(supabase, applyTrainingModule(bucketLine.station)),
+      loadSopsByIds(supabase, applyTrainingModule(bucketLine.general)),
+      loadSopsByIds(supabase, applyTrainingModule(bucketFamily.station)),
+      loadSopsByIds(supabase, applyTrainingModule(bucketFamily.general)),
     ])
 
     return NextResponse.json({
@@ -222,6 +249,8 @@ export async function GET(request: NextRequest) {
         machineFamilyId: machine.machine_family_id,
         stationCode: stationRowRes.data ? (stationRowRes.data as StationRow).station_code : null,
         stationId: resolvedStationId,
+        trainingModuleId,
+        trainingModule: trainingModuleMeta,
       },
       station: stationRowRes.data ? (stationRowRes.data as StationRow) : null,
       results: {

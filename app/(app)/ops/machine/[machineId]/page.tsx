@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
+import { formatMachineFamilyLabel } from '@/lib/format-machine-family'
 import { getPublicSiteOrigin } from '@/lib/public-site-url'
 import type { MachineFamilyStation, SOP } from '@/lib/types'
 
@@ -361,7 +362,7 @@ export default function OpsMachinePage() {
             <h1 className="text-base font-bold truncate">{titleParts.join(' • ')}</h1>
             {ctx.machine.machine_family ? (
               <p className="text-xs text-gray-600 dark:text-gray-400 truncate">
-                {ctx.machine.machine_family.name}
+                {formatMachineFamilyLabel(ctx.machine.machine_family)}
               </p>
             ) : null}
           </div>

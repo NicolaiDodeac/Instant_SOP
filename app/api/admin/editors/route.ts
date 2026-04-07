@@ -1,26 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
-
-function requireSuperUser(supabase: Awaited<ReturnType<typeof createClientServer>>) {
-  return async () => {
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { ok: false, status: 401 as const, json: { error: 'Unauthorized' } }
-    }
-    const superUserId = process.env.SUPER_USER_ID
-    if (!superUserId || user.id !== superUserId) {
-      return { ok: false, status: 403 as const, json: { error: 'Forbidden' } }
-    }
-    return { ok: true, user } as const
-  }
-}
+import { requireSuperUser } from '@/lib/require-super-user-server'
 
 export async function GET() {
   const supabase = await createClientServer()
-  const check = await requireSuperUser(supabase)()
+  const check = await requireSuperUser(supabase)
   if (!check.ok) {
     return NextResponse.json(check.json, { status: check.status })
   }
@@ -48,7 +32,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const supabase = await createClientServer()
-  const check = await requireSuperUser(supabase)()
+  const check = await requireSuperUser(supabase)
   if (!check.ok) {
     return NextResponse.json(check.json, { status: check.status })
   }
@@ -94,7 +78,7 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   const supabase = await createClientServer()
-  const check = await requireSuperUser(supabase)()
+  const check = await requireSuperUser(supabase)
   if (!check.ok) {
     return NextResponse.json(check.json, { status: check.status })
   }

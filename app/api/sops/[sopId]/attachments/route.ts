@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
+import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 
 type Attachments = {
   trainingModuleIds: string[]
@@ -17,7 +18,7 @@ async function isSuperUser(service: ReturnType<typeof createServiceRoleClient>, 
   } catch {
     // ignore
   }
-  if (process.env.SUPER_USER_ID && process.env.SUPER_USER_ID === userId) return true
+  if (isSuperUserIdFromEnv(userId)) return true
   return false
 }
 

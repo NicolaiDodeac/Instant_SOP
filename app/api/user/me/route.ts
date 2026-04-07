@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClientServer } from '@/lib/supabase/server'
+import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 
 export async function GET() {
   try {
@@ -30,8 +31,7 @@ export async function GET() {
     } catch {
       // super_users table may not exist yet if migration not run
     }
-    const superUserIdEnv = process.env.SUPER_USER_ID
-    if (!!superUserIdEnv && superUserIdEnv === user.id) isSuperUser = true
+    if (isSuperUserIdFromEnv(user.id)) isSuperUser = true
     const isEditor = !!editorRow || isSuperUser
 
     return NextResponse.json({

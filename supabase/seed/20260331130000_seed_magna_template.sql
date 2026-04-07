@@ -2,7 +2,7 @@
 -- Run AFTER `supabase/migrations/20260331123500_magna_structure.sql`.
 --
 -- This is a TEMPLATE: it seeds:
--- - Lines 1–3 + legs
+-- - Lines 1–9 + one Advents line (code '10'); every line has Leg 1 + Leg 2 (line_legs LEG_1 / LEG_2)
 -- - Machine families (with supplier labels you provided) + Denester
 -- - Training modules
 -- - Station codes / sections: Stampac (HMI screenshot + Faults), Sensani, Bradman cartoner,
@@ -14,7 +14,7 @@
 begin;
 
 -- ---------------------------------------------------------------------------
--- 1) Lines + legs
+-- 1) Lines + legs (each line → Leg 1 + Leg 2; Advents is a single line with two legs)
 -- ---------------------------------------------------------------------------
 
 with ins_lines as (
@@ -22,7 +22,14 @@ with ins_lines as (
   values
     ('1', 'Line 1', true),
     ('2', 'Line 2', true),
-    ('3', 'Line 3', true)
+    ('3', 'Line 3', true),
+    ('4', 'Line 4', true),
+    ('5', 'Line 5', true),
+    ('6', 'Line 6', true),
+    ('7', 'Line 7', true),
+    ('8', 'Line 8', true),
+    ('9', 'Line 9', true),
+    ('10', 'Advents', true)
   on conflict (code) do update
     set name = excluded.name,
         active = excluded.active,
@@ -30,6 +37,7 @@ with ins_lines as (
   returning id, code
 ),
 ins_legs as (
+  -- Same leg codes/names for every line (including Advents: one line, two legs).
   insert into line_legs (line_id, code, name, active)
   select l.id, 'LEG_1', 'Leg 1', true from ins_lines l
   union all
@@ -473,8 +481,8 @@ select count(*) as upserted_servopod_stations from ins;
 -- 6) TODO: Machines per line/leg (instances)
 -- ---------------------------------------------------------------------------
 -- You said both legs are usually very similar.
--- Below we seed machines for Lines 1–3 based on your current notes.
--- You can extend this section for more lines later.
+-- Below we seed machines for line codes '1'–'3' only (lines '4'–'10' have legs but no machines yet).
+-- Add more `values (...)` blocks per line when you have the layout.
 --
 -- Line 1: currently only Leg 1 has machines (we still keep Leg 2 seeded empty)
 with leg as (

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { formatMachineFamilyLabel } from '@/lib/format-machine-family'
-import type { Line, LineLeg, Machine, MachineFamily } from '@/lib/types'
+import type { Line, LineLeg, Machine, MachineFamily, MachineFamilyStation } from '@/lib/types'
 
 type MachineWithFam = Machine & { machine_family?: MachineFamily }
 type LegWithMachines = LineLeg & { machines: MachineWithFam[] }
@@ -49,7 +49,7 @@ export default function AdminMachinesPage() {
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
-  /** New machine category (family + starter stations). */
+  /** New machine category (family). */
   const [catCode, setCatCode] = useState('')
   const [catName, setCatName] = useState('')
   const [catSupplier, setCatSupplier] = useState('')
@@ -63,6 +63,18 @@ export default function AdminMachinesPage() {
   const [editingFamilyName, setEditingFamilyName] = useState('')
   const [editingFamilySupplier, setEditingFamilySupplier] = useState('')
   const [savingFamilyEdit, setSavingFamilyEdit] = useState(false)
+
+  const [editFamilyStations, setEditFamilyStations] = useState<MachineFamilyStation[]>([])
+  const [stationsLoading, setStationsLoading] = useState(false)
+  const [stationsError, setStationsError] = useState<string | null>(null)
+  const [newStCode, setNewStCode] = useState('')
+  const [newStName, setNewStName] = useState('')
+  const [addingStation, setAddingStation] = useState(false)
+  const [editingStationId, setEditingStationId] = useState<string | null>(null)
+  const [editStCode, setEditStCode] = useState('')
+  const [editStName, setEditStName] = useState('')
+  const [savingStationEdit, setSavingStationEdit] = useState(false)
+  const [deletingStationId, setDeletingStationId] = useState<string | null>(null)
 
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -161,6 +173,38 @@ export default function AdminMachinesPage() {
     )
   }, [machineFamilies])
 
+  const reloadFamilyStations = useCallback(async (familyId: string) => {
+    setStationsLoading(true)
+    setStationsError(null)
+    try {
+      const res = await fetch(`/api/admin/machine-families/${encodeURIComponent(familyId)}/stations`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setStationsError(typeof data?.error === 'string' ? data.error : 'Failed to load stations')
+        return
+      }
+      setEditFamilyStations((data.stations ?? []) as MachineFamilyStation[])
+    } catch {
+      setStationsError('Network error loading stations')
+    } finally {
+      setStationsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!editingFamilyId) {
+      setEditFamilyStations([])
+      setStationsError(null)
+      setEditingStationId(null)
+      setNewStCode('')
+      setNewStName('')
+      setEditStCode('')
+      setEditStName('')
+      return
+    }
+    void reloadFamilyStations(editingFamilyId)
+  }, [editingFamilyId, reloadFamilyStations])
+
   async function handleCreateCategory(e: React.FormEvent) {
     e.preventDefault()
     if (!catCode.trim() || !catName.trim()) return
@@ -182,6 +226,12 @@ export default function AdminMachinesPage() {
       if (!res.ok) {
         setCreateCategoryError(data?.error ?? 'Failed to create machine type')
         return
+      }
+      const inserted = data?.machineFamily as MachineFamily | undefined
+      if (inserted?.id) {
+        setEditingFamilyId(inserted.id)
+        setEditingFamilyName(inserted.name)
+        setEditingFamilySupplier(typeof inserted.supplier === 'string' ? inserted.supplier : '')
       }
       setCatCode('')
       setCatName('')
@@ -254,6 +304,138 @@ export default function AdminMachinesPage() {
       setFamilyListError('Save failed')
     } finally {
       setSavingFamilyEdit(false)
+    }
+  }
+
+  async function handleAddFamilyStation(familyId: string, usesHmiStationCodes: boolean) {
+    const name = newStName.trim()
+    if (!name) {
+      setStationsError('Enter a station name.')
+      return
+    }
+    const section = name
+    let station_code: number
+    if (usesHmiStationCodes) {
+      const code = Number.parseInt(newStCode.trim(), 10)
+      if (!Number.isInteger(code)) {
+        setStationsError('Enter a numeric station code.')
+        return
+      }
+      station_code = code
+    } else {
+      const maxCode = editFamilyStations.reduce((m, s) => Math.max(m, s.station_code), 0)
+      station_code = maxCode + 1
+    }
+
+    setAddingStation(true)
+    setStationsError(null)
+    try {
+      const res = await fetch(`/api/admin/machine-families/${encodeURIComponent(familyId)}/stations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          station_code,
+          name,
+          section,
+          sort_order: null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setStationsError(typeof data?.error === 'string' ? data.error : 'Failed to add station')
+        return
+      }
+      setNewStCode('')
+      setNewStName('')
+      await reloadFamilyStations(familyId)
+    } catch {
+      setStationsError('Add station failed')
+    } finally {
+      setAddingStation(false)
+    }
+  }
+
+  async function handleDeleteFamilyStation(familyId: string, stationId: string) {
+    if (!window.confirm('Delete this station? Any SOP links to it will be removed.')) {
+      return
+    }
+    setDeletingStationId(stationId)
+    setStationsError(null)
+    try {
+      const res = await fetch(
+        `/api/admin/machine-families/${encodeURIComponent(familyId)}/stations/${encodeURIComponent(stationId)}`,
+        { method: 'DELETE' }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setStationsError(typeof data?.error === 'string' ? data.error : 'Failed to delete station')
+        return
+      }
+      if (editingStationId === stationId) {
+        setEditingStationId(null)
+      }
+      await reloadFamilyStations(familyId)
+    } catch {
+      setStationsError('Delete failed')
+    } finally {
+      setDeletingStationId(null)
+    }
+  }
+
+  function beginEditStation(s: MachineFamilyStation) {
+    setEditingStationId(s.id)
+    setEditStCode(String(s.station_code))
+    setEditStName(s.name)
+    setStationsError(null)
+  }
+
+  function cancelEditStation() {
+    setEditingStationId(null)
+    setEditStCode('')
+    setEditStName('')
+  }
+
+  async function handleSaveStationEdit(familyId: string, usesHmi: boolean) {
+    if (!editingStationId) return
+    const name = editStName.trim()
+    if (!name) {
+      setStationsError('Name is required.')
+      return
+    }
+    const section = name
+
+    const body: { name: string; section: string; station_code?: number } = { name, section }
+    if (usesHmi) {
+      const code = Number.parseInt(editStCode.trim(), 10)
+      if (!Number.isInteger(code)) {
+        setStationsError('Station code must be a whole number.')
+        return
+      }
+      body.station_code = code
+    }
+
+    setSavingStationEdit(true)
+    setStationsError(null)
+    try {
+      const res = await fetch(
+        `/api/admin/machine-families/${encodeURIComponent(familyId)}/stations/${encodeURIComponent(editingStationId)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setStationsError(typeof data?.error === 'string' ? data.error : 'Failed to update station')
+        return
+      }
+      cancelEditStation()
+      await reloadFamilyStations(familyId)
+    } catch {
+      setStationsError('Update failed')
+    } finally {
+      setSavingStationEdit(false)
     }
   }
 
@@ -626,7 +808,7 @@ export default function AdminMachinesPage() {
                   <span className="font-medium">HMI shows numeric station codes</span>
                   <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                     Match equipment where operators use on-screen station numbers (like Stampac).
-                    Starter template: HMI + Faults. Turn off for name-based zones only.
+                    Turn off for name-based zones. Add stations after create from the type editor.
                   </span>
                 </span>
               </label>
@@ -662,45 +844,221 @@ export default function AdminMachinesPage() {
                   {sortedMachineFamilies.map((fam) => (
                     <div key={fam.id} className="px-3 py-3">
                       {editingFamilyId === fam.id ? (
-                        <div className="space-y-2 pr-1">
-                          <input
-                            type="text"
-                            value={editingFamilyName}
-                            onChange={(e) => setEditingFamilyName(e.target.value)}
-                            placeholder="Display name"
-                            className="w-full sm:max-w-md px-2 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
-                          />
-                          <input
-                            type="text"
-                            value={editingFamilySupplier}
-                            onChange={(e) => setEditingFamilySupplier(e.target.value)}
-                            placeholder="Supplier (optional)"
-                            className="w-full sm:max-w-md px-2 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
-                          />
-                          <p className="text-xs font-mono text-gray-500 dark:text-gray-400">
-                            {fam.code}
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              disabled={savingFamilyEdit || !editingFamilyName.trim()}
-                              onClick={() => void handleSaveFamilyEdit(fam.id)}
-                              className="text-sm text-blue-600 dark:text-blue-400 font-medium disabled:opacity-50"
-                            >
-                              Save
-                            </button>
-                            <button
-                              type="button"
-                              disabled={savingFamilyEdit}
-                              onClick={() => {
-                                setEditingFamilyId(null)
-                                setEditingFamilyName('')
-                                setEditingFamilySupplier('')
-                              }}
-                              className="text-sm text-gray-600 dark:text-gray-400"
-                            >
-                              Cancel
-                            </button>
+                        <div className="space-y-4 pr-1">
+                          <div className="space-y-2">
+                            <input
+                              type="text"
+                              value={editingFamilyName}
+                              onChange={(e) => setEditingFamilyName(e.target.value)}
+                              placeholder="Display name"
+                              className="w-full sm:max-w-md px-2 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
+                            />
+                            <input
+                              type="text"
+                              value={editingFamilySupplier}
+                              onChange={(e) => setEditingFamilySupplier(e.target.value)}
+                              placeholder="Supplier (optional)"
+                              className="w-full sm:max-w-md px-2 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
+                            />
+                            <p className="text-xs font-mono text-gray-500 dark:text-gray-400">
+                              {fam.code}
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                disabled={savingFamilyEdit || !editingFamilyName.trim()}
+                                onClick={() => void handleSaveFamilyEdit(fam.id)}
+                                className="text-sm text-blue-600 dark:text-blue-400 font-medium disabled:opacity-50"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                disabled={savingFamilyEdit}
+                                onClick={() => {
+                                  setEditingFamilyId(null)
+                                  setEditingFamilyName('')
+                                  setEditingFamilySupplier('')
+                                }}
+                                className="text-sm text-gray-600 dark:text-gray-400"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="border-t border-gray-200 dark:border-gray-700 pt-3 space-y-2">
+                            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                              Stations
+                            </h4>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              Add or edit stations for this machine type.
+                              {fam.uses_hmi_station_codes === true
+                                ? ' With numeric HMI codes, enter the on-screen station number for each row.'
+                                : ' Codes are assigned automatically; only the name is shown in the list.'}
+                            </p>
+                            {stationsError && (
+                              <p className="text-sm text-red-600 dark:text-red-400">{stationsError}</p>
+                            )}
+                            {stationsLoading && editFamilyStations.length === 0 ? (
+                              <p className="text-xs text-gray-500 dark:text-gray-400">
+                                Loading stations…
+                              </p>
+                            ) : (
+                              <ul className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                {editFamilyStations.map((s) => {
+                                  const usesHmi = fam.uses_hmi_station_codes === true
+                                  if (editingStationId === s.id) {
+                                    return (
+                                      <li
+                                        key={s.id}
+                                        className="rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 p-2 space-y-2"
+                                      >
+                                        <div className="grid gap-2 sm:grid-cols-2">
+                                          {usesHmi ? (
+                                            <label className="block text-xs text-gray-600 dark:text-gray-400">
+                                              <span className="font-medium text-gray-700 dark:text-gray-300">
+                                                Code
+                                              </span>
+                                              <input
+                                                type="text"
+                                                inputMode="numeric"
+                                                value={editStCode}
+                                                onChange={(e) => setEditStCode(e.target.value)}
+                                                className="mt-0.5 w-full px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm font-mono"
+                                              />
+                                            </label>
+                                          ) : null}
+                                          <label
+                                            className={`block text-xs text-gray-600 dark:text-gray-400 ${usesHmi ? '' : 'sm:col-span-2'}`}
+                                          >
+                                            <span className="font-medium text-gray-700 dark:text-gray-300">
+                                              Name
+                                            </span>
+                                            <input
+                                              type="text"
+                                              value={editStName}
+                                              onChange={(e) => setEditStName(e.target.value)}
+                                              className="mt-0.5 w-full px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
+                                            />
+                                          </label>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                          <button
+                                            type="button"
+                                            disabled={savingStationEdit}
+                                            onClick={() =>
+                                              void handleSaveStationEdit(fam.id, usesHmi)
+                                            }
+                                            className="text-sm text-blue-600 dark:text-blue-400 font-medium disabled:opacity-50"
+                                          >
+                                            Save row
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={savingStationEdit}
+                                            onClick={cancelEditStation}
+                                            className="text-sm text-gray-600 dark:text-gray-400"
+                                          >
+                                            Cancel
+                                          </button>
+                                        </div>
+                                      </li>
+                                    )
+                                  }
+                                  return (
+                                    <li
+                                      key={s.id}
+                                      className="flex flex-wrap items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-gray-900/50 px-2 py-2"
+                                    >
+                                      <div className="min-w-0 flex-1 space-y-0.5">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          {usesHmi ? (
+                                            <span className="font-mono text-xs text-gray-800 dark:text-gray-200">
+                                              {s.station_code}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                        <p className="font-medium text-gray-900 dark:text-gray-100">
+                                          {s.name}
+                                        </p>
+                                      </div>
+                                      <div className="flex flex-wrap gap-1 shrink-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => beginEditStation(s)}
+                                          disabled={Boolean(editingStationId) && editingStationId !== s.id}
+                                          className="text-xs text-blue-600 dark:text-blue-400 font-medium disabled:opacity-40 px-1"
+                                        >
+                                          Edit
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleDeleteFamilyStation(fam.id, s.id)}
+                                          disabled={deletingStationId === s.id}
+                                          className="text-xs text-red-600 dark:text-red-400 font-medium disabled:opacity-50 px-1"
+                                        >
+                                          {deletingStationId === s.id ? '…' : 'Delete'}
+                                        </button>
+                                      </div>
+                                    </li>
+                                  )
+                                })}
+                              </ul>
+                            )}
+
+                            <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 bg-white/40 dark:bg-gray-900/30 p-2 space-y-2">
+                              <p className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                                Add station
+                              </p>
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                {fam.uses_hmi_station_codes === true ? (
+                                  <label className="block text-xs text-gray-600 dark:text-gray-400">
+                                    <span className="font-medium text-gray-700 dark:text-gray-300">
+                                      Code
+                                    </span>
+                                    <input
+                                      type="text"
+                                      inputMode="numeric"
+                                      value={newStCode}
+                                      onChange={(e) => setNewStCode(e.target.value)}
+                                      className="mt-0.5 w-full px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm font-mono"
+                                    />
+                                  </label>
+                                ) : null}
+                                <label
+                                  className={`block text-xs text-gray-600 dark:text-gray-400 ${fam.uses_hmi_station_codes === true ? '' : 'sm:col-span-2'}`}
+                                >
+                                  <span className="font-medium text-gray-700 dark:text-gray-300">
+                                    Name
+                                  </span>
+                                  <input
+                                    type="text"
+                                    value={newStName}
+                                    onChange={(e) => setNewStName(e.target.value)}
+                                    className="mt-0.5 w-full px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
+                                  />
+                                </label>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={
+                                  addingStation ||
+                                  stationsLoading ||
+                                  !newStName.trim() ||
+                                  (fam.uses_hmi_station_codes === true && !newStCode.trim())
+                                }
+                                onClick={() =>
+                                  void handleAddFamilyStation(
+                                    fam.id,
+                                    fam.uses_hmi_station_codes === true
+                                  )
+                                }
+                                className="text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md font-medium disabled:opacity-50"
+                              >
+                                {addingStation ? 'Adding…' : 'Add station'}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       ) : (

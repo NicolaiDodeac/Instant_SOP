@@ -187,12 +187,20 @@ export default function DashboardClient() {
           <h1 className="text-xl md:text-2xl font-bold truncate">SOPs</h1>
           <div className="flex items-center gap-1 shrink-0">
             {isSuperUser && (
-              <Link
-                href="/admin/editors"
-                className="inline-flex items-center text-sm text-gray-600 dark:text-gray-400 touch-target px-2 min-h-[2.25rem]"
-              >
-                Manage editors
-              </Link>
+              <>
+                <Link
+                  href="/admin/editors"
+                  className="inline-flex items-center text-sm text-gray-600 dark:text-gray-400 touch-target px-2 min-h-[2.25rem]"
+                >
+                  Manage editors
+                </Link>
+                <Link
+                  href="/admin/machines"
+                  className="inline-flex items-center text-sm text-gray-600 dark:text-gray-400 touch-target px-2 min-h-[2.25rem]"
+                >
+                  Manage machines
+                </Link>
+              </>
             )}
             <button
               type="button"

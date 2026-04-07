@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 import { isAuthorizedVideoPath, isUuid } from '@/lib/video-edit-auth'
 
 /**
@@ -24,10 +25,8 @@ export async function resolveStepVideoForProcessing(
   if (sopErr) return { ok: false, status: 500, error: sopErr.message }
   if (!sopRow) return { ok: false, status: 404, error: 'SOP not found' }
 
-  let isSuperUser = false
   const { data: superRow } = await supabase.from('super_users').select('user_id').eq('user_id', userId).maybeSingle()
-  isSuperUser = !!superRow
-  if (process.env.SUPER_USER_ID && process.env.SUPER_USER_ID === userId) isSuperUser = true
+  const isSuperUser = !!superRow || isSuperUserIdFromEnv(userId)
 
   const isOwner = sopRow.owner === userId
   if (!isOwner && !isSuperUser) {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
+import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 function isUuid(id: string): boolean {
@@ -44,10 +45,8 @@ export async function PUT(
       return NextResponse.json({ error: 'SOP not found' }, { status: 404 })
     }
     const isOwner = sop.owner === user.id
-    let isSuperUser = false
     const { data: superRow } = await service.from('super_users').select('user_id').eq('user_id', user.id).maybeSingle()
-    isSuperUser = !!superRow
-    if (process.env.SUPER_USER_ID && process.env.SUPER_USER_ID === user.id) isSuperUser = true
+    const isSuperUser = !!superRow || isSuperUserIdFromEnv(user.id)
     if (!isOwner && !isSuperUser) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }

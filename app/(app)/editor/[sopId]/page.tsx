@@ -39,6 +39,7 @@ import {
   isVideoCutEnabled,
   isVideoPreviewSpeedEnabled,
 } from '@/lib/feature-flags'
+import { formatMachineFamilyLabel } from '@/lib/format-machine-family'
 import { fetchSignedMediaUrl } from '@/lib/fetch-signed-urls'
 import { nanoid } from 'nanoid'
 import Image from 'next/image'
@@ -2322,7 +2323,8 @@ style: kind === 'arrow'
                                 : ''
                             }`}
                           >
-                            {selectedMachineFamilyIds.has(f.id) ? '✓ ' : ''}{f.name}
+                            {selectedMachineFamilyIds.has(f.id) ? '✓ ' : ''}
+                            {formatMachineFamilyLabel(f)}
                           </button>
                         ))}
                         {filteredMachineFamilies.length === 0 && (
@@ -2361,7 +2363,9 @@ style: kind === 'arrow'
                           }
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 text-sm touch-target"
                         >
-                          <span className="text-gray-900 dark:text-gray-100">{fam.name}</span>
+                          <span className="text-gray-900 dark:text-gray-100">
+                            {formatMachineFamilyLabel(fam)}
+                          </span>
                           <span className="text-gray-600 dark:text-gray-400">×</span>
                         </button>
                       )

@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { formatMachineFamilyLabel } from '@/lib/format-machine-family'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { Line, LineLeg, Machine } from '@/lib/types'
 
@@ -251,9 +252,9 @@ function OpsSelectPageInner() {
                         }`}
                       >
                         <div className="font-semibold text-gray-900 dark:text-gray-100">{m.name}</div>
-                        {m.machine_family?.name ? (
+                        {m.machine_family ? (
                           <div className="text-xs text-gray-600 dark:text-gray-400">
-                            {m.machine_family.name}
+                            {formatMachineFamilyLabel(m.machine_family)}
                           </div>
                         ) : null}
                       </button>

@@ -33,12 +33,13 @@ function mergeSopsDeduped(
   return out
 }
 
-function SopLink({ sop }: { sop: SOP }) {
+function SopLink({ sop, machineId }: { sop: SOP; machineId: string }) {
   if (!sop.share_slug) return null
   const label = sop.sop_number != null ? `SOP ${sop.sop_number} — ${sop.title}` : sop.title
+  const returnTo = `/ops/machine/${machineId}`
   return (
     <Link
-      href={`/sop/${sop.share_slug}`}
+      href={`/sop/${sop.share_slug}?returnTo=${encodeURIComponent(returnTo)}`}
       className="block px-3 py-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/70 transition-colors touch-target"
     >
       <div className="font-semibold">{label}</div>
@@ -619,7 +620,7 @@ export default function OpsMachineClient({
               <h2 className="text-sm font-bold text-gray-900 dark:text-gray-100">SOPs</h2>
               <div className="space-y-2">
                 {list.map((sop) => (
-                  <SopLink key={sop.id} sop={sop} />
+                  <SopLink key={sop.id} sop={sop} machineId={machineId} />
                 ))}
               </div>
             </div>

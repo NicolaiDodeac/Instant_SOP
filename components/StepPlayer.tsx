@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import type { StepAnnotation } from '@/lib/types'
 
 interface StepPlayerProps {
@@ -124,16 +124,27 @@ export default function StepPlayer({
     }
   }, [imageUrl])
 
-  // Reset paint state when source changes; poster counts as immediate preview for video.
+  // Image mode: reset overlay, then if the browser loaded from cache before onLoad fired,
+  // complete + naturalWidth are already set — onLoad would never run and the spinner would stick.
+  useLayoutEffect(() => {
+    if (!isImageMode || !imageUrl) return
+    setMediaPaintReady(false)
+    const img = imageRef.current
+    if (img?.complete && img.naturalWidth > 0) {
+      setMediaPaintReady(true)
+      queueMicrotask(() => updateDimensions())
+    }
+  }, [isImageMode, imageUrl, updateDimensions])
+
+  // Video: poster can show immediately; no video URL means wait for loadeddata/error handlers.
   useEffect(() => {
-    if (isImageMode) {
-      setMediaPaintReady(false)
-    } else if (!videoUrl) {
+    if (isImageMode) return
+    if (!videoUrl) {
       setMediaPaintReady(false)
     } else {
       setMediaPaintReady(!!posterUrl)
     }
-  }, [isImageMode, videoUrl, imageUrl, posterUrl])
+  }, [isImageMode, videoUrl, posterUrl])
 
   useEffect(() => {
     const el = containerRef.current

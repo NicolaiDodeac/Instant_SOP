@@ -2229,6 +2229,23 @@ style: kind === 'arrow'
                   })()}
                 </button>
               )}
+              {sop.published && sop.share_slug ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const slug = sop.share_slug as string
+                    const editorReturn = `/editor/${sopId}${
+                      tab === 'routing' ? '?tab=routing' : '?tab=steps'
+                    }`
+                    router.push(
+                      `/sop/${encodeURIComponent(slug)}?returnTo=${encodeURIComponent(editorReturn)}`
+                    )
+                  }}
+                  className="px-1.5 py-1.5 rounded text-xs min-w-[40px] bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  View
+                </button>
+              ) : null}
             </div>
           </div>
 

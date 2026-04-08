@@ -324,7 +324,11 @@ export default function DashboardClient({
                 {sops.map((sop) => (
                   <div
                     key={sop.id}
-                    onClick={() => router.push(`/sop/${sop.share_slug}`)}
+                    onClick={() =>
+                      router.push(
+                        `/sop/${sop.share_slug}?returnTo=${encodeURIComponent('/dashboard')}`
+                      )
+                    }
                     className="px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer touch-target"
                   >
                     <div className="flex items-stretch justify-between gap-2">

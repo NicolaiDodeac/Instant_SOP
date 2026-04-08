@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { saveVideoBlob, saveImageBlob } from '@/lib/idb'
-import { getVideoDisplayAspectRatio } from '@/lib/video-display-aspect'
 import ImageCropModal from '@/components/ImageCropModal'
 
 interface VideoCaptureProps {
@@ -32,9 +31,6 @@ export default function VideoCapture({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const galleryInputRef = useRef<HTMLInputElement>(null)
   const [imageCrop, setImageCrop] = useState<{ url: string; mime: string } | null>(null)
-  /** Matches camera / preview frame so SD or landscape fallbacks are not forced into a 9:16 box. */
-  const [previewAspect, setPreviewAspect] = useState<number | null>(null)
-  const previewRvfcRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     return () => {
@@ -43,15 +39,6 @@ export default function VideoCapture({
       }
       if (mediaRecorderRef.current?.state === 'recording') {
         mediaRecorderRef.current.stop()
-      }
-      const el = videoRef.current
-      if (el && previewRvfcRef.current !== undefined) {
-        try {
-          el.cancelVideoFrameCallback(previewRvfcRef.current)
-        } catch {
-          // ignore
-        }
-        previewRvfcRef.current = undefined
       }
     }
   }, [])
@@ -68,60 +55,18 @@ export default function VideoCapture({
         )
         return
       }
-      let stream: MediaStream
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'environment',
-            aspectRatio: { ideal: 9 / 16 },
-            width: { ideal: 1080 },
-            height: { ideal: 1920 },
-          },
-          audio: false,
-        })
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'environment',
-            width: { ideal: 720 },
-            height: { ideal: 1280 },
-          },
-          audio: false,
-        })
-      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 720 },
+          height: { ideal: 1280 },
+        },
+        audio: false,
+      })
 
       if (videoRef.current) {
-        const el = videoRef.current
-        const applyPreviewAspect = () => {
-          const r = getVideoDisplayAspectRatio(el)
-          if (r != null) setPreviewAspect(r)
-        }
-        const onMeta = () => {
-          applyPreviewAspect()
-        }
-        el.addEventListener('loadedmetadata', onMeta, { once: true })
-        if (previewRvfcRef.current !== undefined) {
-          try {
-            el.cancelVideoFrameCallback(previewRvfcRef.current)
-          } catch {
-            // ignore
-          }
-          previewRvfcRef.current = undefined
-        }
-        try {
-          previewRvfcRef.current = el.requestVideoFrameCallback(() => {
-            applyPreviewAspect()
-            if (previewRvfcRef.current !== undefined) {
-              el.cancelVideoFrameCallback(previewRvfcRef.current)
-              previewRvfcRef.current = undefined
-            }
-          })
-        } catch {
-          previewRvfcRef.current = undefined
-        }
-        el.srcObject = stream
-        setPreviewAspect(null)
-        void el.play()
+        videoRef.current.srcObject = stream
+        videoRef.current.play()
       }
 
       const mimeType = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm;codecs=vp9'
@@ -149,19 +94,6 @@ export default function VideoCapture({
 
         // Stop all tracks
         stream.getTracks().forEach((track) => track.stop())
-        if (videoRef.current) {
-          const vel = videoRef.current
-          if (previewRvfcRef.current !== undefined) {
-            try {
-              vel.cancelVideoFrameCallback(previewRvfcRef.current)
-            } catch {
-              // ignore
-            }
-            previewRvfcRef.current = undefined
-          }
-          vel.srcObject = null
-        }
-        setPreviewAspect(null)
 
         onVideoCaptured(blob, durationMs)
         setDuration(0)
@@ -265,16 +197,7 @@ export default function VideoCapture({
         </div>
       ) : (
         <>
-          <div
-            className={`relative w-full mx-auto bg-black rounded-lg overflow-hidden max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px] ${
-              previewAspect != null && previewAspect > 1
-                ? 'max-w-[min(100%,calc(100dvh*16/9))]'
-                : 'max-w-[min(100%,calc(100dvh*9/16))]'
-            }`}
-            style={
-              previewAspect != null ? { aspectRatio: previewAspect } : { aspectRatio: 9 / 16 }
-            }
-          >
+          <div className="relative w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto bg-black rounded-lg overflow-hidden aspect-[9/16] max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]">
             <video
               ref={videoRef}
               className="w-full h-full object-contain"

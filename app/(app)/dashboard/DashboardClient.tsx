@@ -38,13 +38,21 @@ function SearchIcon({ className }: { className?: string }) {
   )
 }
 
-export default function DashboardClient() {
-  const [isEditor, setIsEditor] = useState<boolean | null>(null)
-  const [isSuperUser, setIsSuperUser] = useState(false)
+export default function DashboardClient({
+  initialIsEditor = false,
+  initialIsSuperUser = false,
+  initialTrainingModules = [],
+}: {
+  initialIsEditor?: boolean
+  initialIsSuperUser?: boolean
+  initialTrainingModules?: TrainingModule[]
+}) {
+  const [isEditor] = useState(initialIsEditor)
+  const [isSuperUser] = useState(initialIsSuperUser)
   const [sopMeta, setSopMeta] = useState<Record<string, SopAuthorMeta>>({})
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebouncedValue(search.trim(), 300)
-  const [trainingModules, setTrainingModules] = useState<TrainingModule[]>([])
+  const [trainingModules] = useState<TrainingModule[]>(() => initialTrainingModules)
   const [trainingModuleId, setTrainingModuleId] = useState('')
   const [modulePickerOpen, setModulePickerOpen] = useState(false)
   const [moduleQuery, setModuleQuery] = useState('')
@@ -96,31 +104,8 @@ export default function DashboardClient() {
   )
 
   useEffect(() => {
-    loadMe()
-  }, [])
-
-  useEffect(() => {
     sopMetaRef.current = sopMeta
   }, [sopMeta])
-
-  useEffect(() => {
-    void (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-      if (!user) return
-      try {
-        const res = await fetch('/api/context/tree')
-        if (!res.ok) return
-        const body = (await res.json()) as { trainingModules?: TrainingModule[] }
-        setTrainingModules(
-          (body.trainingModules ?? []).filter((m) => m.active !== false)
-        )
-      } catch {
-        // ignore
-      }
-    })()
-  }, [supabase])
 
   const selectedTrainingModule = useMemo(
     () => trainingModules.find((m) => m.id === trainingModuleId) ?? null,
@@ -155,18 +140,6 @@ export default function DashboardClient() {
     })()
     return () => ac.abort()
   }, [publishedSopIds])
-
-  async function loadMe() {
-    try {
-      const res = await fetch('/api/user/me')
-      const data = await res.json()
-      setIsEditor(data?.isEditor === true)
-      setIsSuperUser(data?.isSuperUser === true)
-    } catch {
-      setIsEditor(false)
-      setIsSuperUser(false)
-    }
-  }
 
   async function handleSignOut() {
     await supabase.auth.signOut()
@@ -331,7 +304,7 @@ export default function DashboardClient() {
               inputMode="search"
             />
           </div>
-          {loading || isEditor === null ? (
+          {loading ? (
             <div className="text-center py-8">Loading...</div>
           ) : sops.length === 0 && !hasMore ? (
             <div className="text-center py-8 text-gray-500">
@@ -351,7 +324,11 @@ export default function DashboardClient() {
                 {sops.map((sop) => (
                   <div
                     key={sop.id}
-                    onClick={() => router.push(`/sop/${sop.share_slug}`)}
+                    onClick={() =>
+                      router.push(
+                        `/sop/${sop.share_slug}?returnTo=${encodeURIComponent('/dashboard')}`
+                      )
+                    }
                     className="px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer touch-target"
                   >
                     <div className="flex items-stretch justify-between gap-2">

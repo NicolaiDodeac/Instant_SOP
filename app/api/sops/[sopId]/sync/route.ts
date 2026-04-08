@@ -1,5 +1,7 @@
+import { revalidateTag } from 'next/cache'
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
+import { shareViewerRevalidateTagForShareSlug } from '@/lib/server/share-viewer-bundle-cache'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -106,6 +108,17 @@ export async function PUT(
           style: a.style ?? null,
         })
       }
+    }
+
+    const { data: shareRow } = await service
+      .from('sops')
+      .select('share_slug')
+      .eq('id', sopId)
+      .maybeSingle()
+    const slug =
+      (shareRow as { share_slug: string | null } | null)?.share_slug?.trim() ?? ''
+    if (slug) {
+      revalidateTag(shareViewerRevalidateTagForShareSlug(slug))
     }
 
     return NextResponse.json({ ok: true, newStepIds })

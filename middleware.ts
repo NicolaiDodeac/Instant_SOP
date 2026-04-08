@@ -57,20 +57,31 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // Protect dashboard and editor routes
-  if (pathname.startsWith('/dashboard') || pathname.startsWith('/editor')) {
+  // Protect dashboard, editor, and SOP share viewer (content requires login)
+  if (
+    pathname.startsWith('/dashboard') ||
+    pathname.startsWith('/editor') ||
+    pathname.startsWith('/sop/')
+  ) {
     if (!user) {
       const url = request.nextUrl.clone()
       url.pathname = '/auth/login'
+      url.search = ''
+      url.searchParams.set('next', `${pathname}${request.nextUrl.search}`)
       return NextResponse.redirect(url)
     }
   }
 
-  // Redirect authenticated users away from login page
+  // Redirect authenticated users away from login page (honor ?next= when safe)
   if (pathname.startsWith('/auth/login')) {
     if (user) {
+      const next = request.nextUrl.searchParams.get('next')
+      if (next && next.startsWith('/') && !next.startsWith('//')) {
+        return NextResponse.redirect(new URL(next, request.nextUrl))
+      }
       const url = request.nextUrl.clone()
       url.pathname = '/dashboard'
+      url.search = ''
       return NextResponse.redirect(url)
     }
   }

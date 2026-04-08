@@ -14,11 +14,9 @@ export async function POST(request: NextRequest) {
 
     const {
       data: { user },
-      error: authError,
     } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    const userId = user?.id ?? ''
+    const isSuperUser = user?.id ? await resolveIsSuperUser(supabase, user.id) : false
 
     let body: { paths?: unknown }
     try {
@@ -40,12 +38,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const isSuperUser = await resolveIsSuperUser(supabase, user.id)
-
     const urls: Record<string, string | null> = {}
     await Promise.all(
       unique.map(async (path) => {
-        const result = await presignGetForVideoPath(supabase, user.id, isSuperUser, path)
+        const result = await presignGetForVideoPath(supabase, userId, isSuperUser, path)
         urls[path] = result.ok ? result.url : null
       })
     )

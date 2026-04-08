@@ -16,14 +16,10 @@ export async function GET(request: NextRequest) {
 
     const {
       data: { user },
-      error: authError,
     } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    const isSuperUser = await resolveIsSuperUser(supabase, user.id)
-    const result = await presignGetForVideoPath(supabase, user.id, isSuperUser, path)
+    const userId = user?.id ?? ''
+    const isSuperUser = user?.id ? await resolveIsSuperUser(supabase, user.id) : false
+    const result = await presignGetForVideoPath(supabase, userId, isSuperUser, path)
 
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: result.status })

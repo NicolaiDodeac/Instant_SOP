@@ -1,0 +1,3437 @@
+'use client'
+
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useRouter, useParams, useSearchParams } from 'next/navigation'
+import { useSupabaseClient } from '@/lib/supabase/client'
+import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  useSortable,
+  horizontalListSortingStrategy,
+  arrayMove,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
+  saveDraft,
+  getDraft,
+  deleteDraft,
+  getVideoBlob,
+  saveVideoBlob,
+  markVideoUploaded,
+  deleteVideoBlob,
+  getImageBlob,
+  markImageUploaded,
+  deleteImageBlob,
+  saveImageBlob,
+} from '@/lib/idb'
+import { compressVideoWithMediabunny } from '@/lib/video-compress-mediabunny'
+import { generateThumbnail } from '@/lib/thumbnail'
+import {
+  isVideoCutAsync,
+  isVideoCutEnabled,
+  isVideoPreviewSpeedEnabled,
+} from '@/lib/feature-flags'
+import { formatMachineFamilyLabel } from '@/lib/format-machine-family'
+import { fetchSignedMediaUrl } from '@/lib/fetch-signed-urls'
+import { nanoid } from 'nanoid'
+import Image from 'next/image'
+import VideoCapture from '@/components/VideoCapture'
+import { linesTreeForEditorRouting, routingKeyFromIds } from '@/lib/editor-routing-lines'
+import type {
+  ContextTreePayload,
+  Line,
+  LineLeg,
+  MachineFamily,
+  MachineFamilyStation,
+  SopRoutingAttachments,
+  TrainingModule,
+} from '@/lib/types'
+
+const CUT_ICON_SRC = '/Film%20Editing.png'
+const SPEED_ICON_SRC = '/timer.png'
+const ARROW_ICON_SRC = '/88c94d22-6a88-414e-b516-3703d91d3f46.png'
+const LABEL_ICON_SRC = '/tag.png'
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** True if id is a DB-generated UUID (not a local nanoid). */
+function isAnnotationIdFromDb(id: string): boolean {
+  return UUID_REGEX.test(id)
+}
+
+/** True if step id is from DB (sop_steps); false for draft steps with nanoid. */
+function isStepIdFromDb(stepId: string): boolean {
+  return UUID_REGEX.test(stepId)
+}
+
+/** Keep idx and auto titles aligned with list order after add/remove. */
+function renumberSteps(ordered: SOPStep[]): SOPStep[] {
+  return ordered.map((s, i) => ({ ...s, idx: i, title: `Step ${i + 1}` }))
+}
+
+function renumberDraftSteps(ordered: DraftStep[]): DraftStep[] {
+  return ordered.map((s, i) => ({ ...s, idx: i, title: `Step ${i + 1}` }))
+}
+
+function SortableStepChip({
+  id,
+  label,
+  active,
+  reorderMode,
+  disabled,
+  onClick,
+}: {
+  id: string
+  label: string
+  active: boolean
+  reorderMode: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id, disabled: !reorderMode || disabled })
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+    touchAction: reorderMode ? 'none' : 'manipulation',
+  }
+
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-lg touch-target whitespace-nowrap text-sm no-select ${
+        active
+          ? 'bg-blue-600 text-white'
+          : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-gray-100'
+      } ${reorderMode ? 'cursor-grab active:cursor-grabbing' : ''} ${
+        disabled ? 'opacity-60 cursor-not-allowed' : ''
+      }`}
+      style={style}
+      aria-label={label}
+      {...attributes}
+      {...listeners}
+      disabled={disabled}
+    >
+      {label}
+    </button>
+  )
+}
+
+/** IndexedDB draft has edits that were never saved with PUT /sync (or legacy draft newer than server). */
+function localDraftHasUnsavedEdits(draft: DraftSOP, serverUpdatedMs: number): boolean {
+  if (draft.lastSyncedAt != null) {
+    return draft.lastModified > draft.lastSyncedAt
+  }
+  return draft.lastModified > serverUpdatedMs
+}
+import TimeBar, { type TimelineDragMode } from '@/components/TimeBar'
+import AnnotToolbar from '@/components/AnnotToolbar'
+import StepPlayer from '@/components/StepPlayer'
+import { SopAuthorSignatureFetch } from '@/components/SopAuthorSignature'
+
+/** Editor-only preview; does not change exported video file. Gated by NEXT_PUBLIC_ENABLE_VIDEO_PREVIEW_SPEED. */
+const VIDEO_PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4, 8] as const
+
+/** Server-side segment speed change (ffmpeg); encoded into the file. Below 1 = slow, above 1 = fast. */
+const SEGMENT_SPEED_FACTORS = [0.5, 2, 3, 4, 8] as const
+
+export default function EditorPageClient({
+  initialUserId,
+  initialIsSuperUser,
+  initialContextTree = null,
+  initialRoutingAttachments = null,
+}: {
+  initialUserId: string
+  initialIsSuperUser: boolean
+  initialContextTree?: ContextTreePayload | null
+  initialRoutingAttachments?: SopRoutingAttachments | null
+}) {
+  const params = useParams()
+  const sopId = params.sopId as string
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const supabase = useSupabaseClient()
+
+  const [sop, setSop] = useState<SOP | null>(null)
+  const [steps, setSteps] = useState<SOPStep[]>([])
+  const [annotations, setAnnotations] = useState<Record<string, StepAnnotation[]>>({})
+  const [currentStepId, setCurrentStepId] = useState<string | null>(null)
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [videoDuration, setVideoDuration] = useState(0) // Track actual video duration from video element
+  const [startTime, setStartTime] = useState(0)
+  const [endTime, setEndTime] = useState(0)
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
+  const [timelineDragMode, setTimelineDragMode] = useState<TimelineDragMode>('seek')
+  const [loading, setLoading] = useState(true)
+  const [currentUserId] = useState<string | null>(() => initialUserId)
+  const [isSuperUser] = useState(() => initialIsSuperUser)
+  const [isOffline, setIsOffline] = useState(false)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'saving' | 'updated'>('idle')
+  const [loadedFromServer, setLoadedFromServer] = useState(false)
+  /** After a clean server load, first saveDraftState aligns lastSyncedAt with lastModified */
+  const baselineDraftSyncRef = useRef(false)
+  /** Skip one IndexedDB persist after PUT /sync when setState will re-run the draft effect */
+  const skipNextDraftPersistRef = useRef(false)
+  const [stepUploadStatus, setStepUploadStatus] = useState<Record<string, 'compressing' | 'uploading' | 'failed' | null>>({})
+  const [stepUploadProgress, setStepUploadProgress] = useState<Record<string, number>>({})
+  const [stepUploadResult, setStepUploadResult] = useState<Record<string, 'compressed' | 'original' | null>>({})
+  const [stepUploadSizes, setStepUploadSizes] = useState<Record<string, { before: number; after: number } | null>>({})
+  const [cutMode, setCutMode] = useState(false)
+  const [cutProgress, setCutProgress] = useState<number | null>(null)
+  const [cutError, setCutError] = useState<string | null>(null)
+  const [speedMode, setSpeedMode] = useState(false)
+  const [speedFactor, setSpeedFactor] = useState(2)
+  const [speedProgress, setSpeedProgress] = useState<number | null>(null)
+  const [speedError, setSpeedError] = useState<string | null>(null)
+  const [playbackRate, setPlaybackRate] = useState(1)
+  const stepInstructionsRef = useRef<string>('')
+  const titleTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const isOwner = !!(sop && currentUserId && sop.owner === currentUserId)
+  const canEdit = isOwner || isSuperUser
+  const editAsDraft = canEdit && loadedFromServer
+  const [reorderMode, setReorderMode] = useState(false)
+  const [reorderOrderIds, setReorderOrderIds] = useState<string[] | null>(null)
+
+  // Attachments (machine family / stations / modules) — used for operator routing.
+  const [machineFamilies, setMachineFamilies] = useState<MachineFamily[]>(
+    () => initialContextTree?.machineFamilies ?? []
+  )
+  const [trainingModules, setTrainingModules] = useState<TrainingModule[]>(
+    () => initialContextTree?.trainingModules ?? []
+  )
+  const [linesTree, setLinesTree] = useState<Array<Line & { legs: Array<LineLeg> }>>(() =>
+    initialContextTree ? linesTreeForEditorRouting(initialContextTree.lines) : []
+  )
+  const [selectedMachineFamilyIds, setSelectedMachineFamilyIds] = useState<Set<string>>(
+    () => new Set(initialRoutingAttachments?.machineFamilyIds ?? [])
+  )
+  const [machineFamilyQuery, setMachineFamilyQuery] = useState('')
+  const [machineFamilyPickerOpen, setMachineFamilyPickerOpen] = useState(false)
+  const [stationsBySection, setStationsBySection] = useState<Record<string, MachineFamilyStation[]>>({})
+  /** When true, station list shows HMI numbers (e.g. Stampac). */
+  const [stationsUsesHmi, setStationsUsesHmi] = useState(false)
+  const [selectedStationIds, setSelectedStationIds] = useState<Set<string>>(
+    () => new Set(initialRoutingAttachments?.stationIds ?? [])
+  )
+  const [selectedModuleIds, setSelectedModuleIds] = useState<Set<string>>(
+    () => new Set(initialRoutingAttachments?.trainingModuleIds ?? [])
+  )
+  const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(
+    () => new Set(initialRoutingAttachments?.lineIds ?? [])
+  )
+  const [selectedLineLegIds, setSelectedLineLegIds] = useState<Set<string>>(
+    () => new Set(initialRoutingAttachments?.lineLegIds ?? [])
+  )
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false)
+  const [attachmentsSaving, setAttachmentsSaving] = useState(false)
+  const [attachmentsSaveStatus, setAttachmentsSaveStatus] = useState<
+    'idle' | 'saving' | 'saved' | 'error'
+  >('idle')
+  const [modulePickerOpen, setModulePickerOpen] = useState(false)
+  const [moduleQuery, setModuleQuery] = useState('')
+  const [stationPickerOpen, setStationPickerOpen] = useState(false)
+  const [stationQuery, setStationQuery] = useState('')
+  const [linePickerOpen, setLinePickerOpen] = useState(false)
+  const [lineQuery, setLineQuery] = useState('')
+  const [legPickerOpen, setLegPickerOpen] = useState(false)
+  const [legQuery, setLegQuery] = useState('')
+
+  function setKeyOfSet(s: Set<string>): string {
+    return [...s].sort().join(',')
+  }
+
+  const [savedRoutingKey, setSavedRoutingKey] = useState<string>(() =>
+    initialRoutingAttachments
+      ? routingKeyFromIds({
+          trainingModuleIds: initialRoutingAttachments.trainingModuleIds,
+          machineFamilyIds: initialRoutingAttachments.machineFamilyIds,
+          stationIds: initialRoutingAttachments.stationIds,
+          lineIds: initialRoutingAttachments.lineIds,
+          lineLegIds: initialRoutingAttachments.lineLegIds,
+        })
+      : routingKeyFromIds({})
+  )
+
+  const currentRoutingKey = useMemo(() => {
+    return [
+      `tm:${setKeyOfSet(selectedModuleIds)}`,
+      `mf:${setKeyOfSet(selectedMachineFamilyIds)}`,
+      `st:${setKeyOfSet(selectedStationIds)}`,
+      `ln:${setKeyOfSet(selectedLineIds)}`,
+      `lg:${setKeyOfSet(selectedLineLegIds)}`,
+    ].join('|')
+  }, [
+    selectedModuleIds,
+    selectedMachineFamilyIds,
+    selectedStationIds,
+    selectedLineIds,
+    selectedLineLegIds,
+  ])
+
+  const routingDirty = currentRoutingKey !== savedRoutingKey
+
+  useEffect(() => {
+    if (routingDirty) setAttachmentsSaveStatus('idle')
+  }, [routingDirty])
+
+  // IMPORTANT: Do not navigate (router.replace) when switching tabs.
+  // Navigation can remount this page, resetting local state and causing "stuck loading" + lost routing edits.
+  const [tab, setTab] = useState<'routing' | 'steps'>(() => {
+    const initial = (searchParams.get('tab') ?? 'steps') as 'routing' | 'steps'
+    return initial === 'routing' ? 'routing' : 'steps'
+  })
+
+  const goTab = (next: 'routing' | 'steps') => {
+    setTab(next)
+    try {
+      const url = new URL(window.location.href)
+      url.searchParams.set('tab', next)
+      window.history.replaceState(null, '', url.toString())
+    } catch {
+      // ignore (e.g., during SSR)
+    }
+  }
+
+  // Editors (non–super-user) may only open their own SOPs; server gate covers DB rows; this catches client-only owner resolution after load.
+  useEffect(() => {
+    if (loading || !sop || !currentUserId) return
+    if (isSuperUser) return
+    if (!loadedFromServer || !sop.owner) return
+    if (sop.owner !== currentUserId) {
+      router.replace('/editor')
+    }
+  }, [loading, isSuperUser, sop, currentUserId, loadedFromServer, router])
+
+  // Check online status
+  useEffect(() => {
+    setIsOffline(!navigator.onLine)
+    const handleOnline = () => setIsOffline(false)
+    const handleOffline = () => setIsOffline(true)
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+
+  // Load SOP data
+  useEffect(() => {
+    loadSOP()
+  }, [sopId])
+
+  // Allow SOP title to wrap to a second line (textarea autosize).
+  useEffect(() => {
+    const el = titleTextareaRef.current
+    if (!el) return
+    el.style.height = '0px'
+    el.style.height = `${el.scrollHeight}px`
+  }, [sop?.title])
+
+  // Load lookup data (families/modules) + current SOP attachments (skipped when RSC prefetched).
+  useEffect(() => {
+    if (!loadedFromServer) return
+    if (!canEdit) return
+
+    const needTree = initialContextTree == null
+    const needAttachments = initialRoutingAttachments == null
+    if (!needTree && !needAttachments) {
+      return
+    }
+
+    void (async () => {
+      setAttachmentsLoading(true)
+      try {
+        if (needTree && needAttachments) {
+          const [treeRes, attRes] = await Promise.all([
+            fetch('/api/context/tree'),
+            fetch(`/api/sops/${encodeURIComponent(sopId)}/attachments`),
+          ])
+          if (treeRes.ok) {
+            const t = (await treeRes.json()) as {
+              lines?: ContextTreePayload['lines']
+              machineFamilies?: MachineFamily[]
+              trainingModules?: TrainingModule[]
+            }
+            setMachineFamilies(t.machineFamilies ?? [])
+            setTrainingModules(t.trainingModules ?? [])
+            setLinesTree(linesTreeForEditorRouting(t.lines ?? []))
+          }
+          if (attRes.ok) {
+            const a = (await attRes.json()) as SopRoutingAttachments
+            setSelectedMachineFamilyIds(new Set(a.machineFamilyIds ?? []))
+            setSelectedStationIds(new Set(a.stationIds ?? []))
+            setSelectedModuleIds(new Set(a.trainingModuleIds ?? []))
+            setSelectedLineIds(new Set(a.lineIds ?? []))
+            setSelectedLineLegIds(new Set(a.lineLegIds ?? []))
+            setSavedRoutingKey(
+              routingKeyFromIds({
+                trainingModuleIds: a.trainingModuleIds ?? [],
+                machineFamilyIds: a.machineFamilyIds ?? [],
+                stationIds: a.stationIds ?? [],
+                lineIds: a.lineIds ?? [],
+                lineLegIds: a.lineLegIds ?? [],
+              })
+            )
+          } else {
+            setSavedRoutingKey(routingKeyFromIds({}))
+          }
+        } else if (needAttachments) {
+          const attRes = await fetch(`/api/sops/${encodeURIComponent(sopId)}/attachments`)
+          if (attRes.ok) {
+            const a = (await attRes.json()) as SopRoutingAttachments
+            setSelectedMachineFamilyIds(new Set(a.machineFamilyIds ?? []))
+            setSelectedStationIds(new Set(a.stationIds ?? []))
+            setSelectedModuleIds(new Set(a.trainingModuleIds ?? []))
+            setSelectedLineIds(new Set(a.lineIds ?? []))
+            setSelectedLineLegIds(new Set(a.lineLegIds ?? []))
+            setSavedRoutingKey(
+              routingKeyFromIds({
+                trainingModuleIds: a.trainingModuleIds ?? [],
+                machineFamilyIds: a.machineFamilyIds ?? [],
+                stationIds: a.stationIds ?? [],
+                lineIds: a.lineIds ?? [],
+                lineLegIds: a.lineLegIds ?? [],
+              })
+            )
+          } else {
+            setSavedRoutingKey(routingKeyFromIds({}))
+          }
+        } else {
+          const treeRes = await fetch('/api/context/tree')
+          if (treeRes.ok) {
+            const t = (await treeRes.json()) as {
+              lines?: ContextTreePayload['lines']
+              machineFamilies?: MachineFamily[]
+              trainingModules?: TrainingModule[]
+            }
+            setMachineFamilies(t.machineFamilies ?? [])
+            setTrainingModules(t.trainingModules ?? [])
+            setLinesTree(linesTreeForEditorRouting(t.lines ?? []))
+          }
+        }
+      } finally {
+        setAttachmentsLoading(false)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadedFromServer, canEdit, sopId])
+
+  // Load stations when family changes.
+  useEffect(() => {
+    const onlyId = selectedMachineFamilyIds.size === 1 ? [...selectedMachineFamilyIds][0] : ''
+    if (!onlyId) {
+      setStationsBySection({})
+      setStationsUsesHmi(false)
+      setSelectedStationIds(new Set())
+      return
+    }
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/context/family-stations?machineFamilyId=${encodeURIComponent(onlyId)}`
+        )
+        if (!res.ok) return
+        const body = (await res.json()) as {
+          usesHmiStationCodes?: boolean
+          stationsBySection?: Record<string, MachineFamilyStation[]>
+        }
+        setStationsUsesHmi(body.usesHmiStationCodes === true)
+        setStationsBySection(body.stationsBySection ?? {})
+      } catch {
+        // ignore
+      }
+    })()
+  }, [selectedMachineFamilyIds])
+
+  const selectedMachineFamilyIdSingle =
+    selectedMachineFamilyIds.size === 1 ? [...selectedMachineFamilyIds][0] : ''
+  const selectedMachineFamily =
+    machineFamilies.find((f) => f.id === selectedMachineFamilyIdSingle) ?? null
+  const filteredMachineFamilies = machineFamilyQuery.trim()
+    ? machineFamilies.filter((f) =>
+        f.name.toLowerCase().includes(machineFamilyQuery.trim().toLowerCase())
+      )
+    : machineFamilies
+
+  const stationListFlat = Object.values(stationsBySection).flat()
+  const filteredModules = moduleQuery.trim()
+    ? trainingModules.filter((m) =>
+        m.name.toLowerCase().includes(moduleQuery.trim().toLowerCase())
+      )
+    : trainingModules
+  const filteredStations = stationQuery.trim()
+    ? stationListFlat.filter((s) => {
+        const q = stationQuery.trim().toLowerCase()
+        const byCode = stationsUsesHmi && String(s.station_code).includes(q)
+        return (
+          byCode ||
+          s.name.toLowerCase().includes(q) ||
+          s.section.toLowerCase().includes(q)
+        )
+      })
+    : stationListFlat
+  const filteredStationsBySection = useMemo(() => {
+    if (!selectedMachineFamilyIdSingle) return {} as Record<string, MachineFamilyStation[]>
+    const by: Record<string, MachineFamilyStation[]> = {}
+    for (const s of filteredStations) {
+      const key = s.section || 'Other'
+      by[key] = by[key] ?? []
+      by[key].push(s)
+    }
+    return by
+  }, [filteredStations, selectedMachineFamilyIdSingle])
+
+  const filteredLines = lineQuery.trim()
+    ? linesTree.filter((l) =>
+        l.name.toLowerCase().includes(lineQuery.trim().toLowerCase()) ||
+        (l.code ?? '').toLowerCase().includes(lineQuery.trim().toLowerCase())
+      )
+    : linesTree
+
+  const availableLegs = useMemo(() => {
+    const ids = selectedLineIds
+    const all = linesTree.flatMap((l) =>
+      ids.size === 0 || ids.has(l.id) ? l.legs.map((leg) => ({ ...leg, _lineName: l.name })) : []
+    ) as Array<LineLeg & { _lineName: string }>
+    return all
+  }, [linesTree, selectedLineIds])
+
+  const filteredLegs = legQuery.trim()
+    ? availableLegs.filter((leg) => {
+        const q = legQuery.trim().toLowerCase()
+        return (
+          leg.name.toLowerCase().includes(q) ||
+          leg.code.toLowerCase().includes(q) ||
+          leg._lineName.toLowerCase().includes(q)
+        )
+      })
+    : availableLegs
+
+  async function saveAttachments() {
+    if (!canEdit || !loadedFromServer) return
+    if (isOffline) return
+    setAttachmentsSaving(true)
+    setAttachmentsSaveStatus('saving')
+    try {
+      const payload = {
+        trainingModuleIds: [...selectedModuleIds],
+        machineFamilyIds: [...selectedMachineFamilyIds],
+        stationIds: [...selectedStationIds],
+        lineIds: [...selectedLineIds],
+        lineLegIds: [...selectedLineLegIds],
+        machineIds: [],
+      }
+      const res = await fetch(`/api/sops/${encodeURIComponent(sopId)}/attachments`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        console.error('Failed to save attachments:', res.status, body)
+        setAttachmentsSaveStatus('error')
+      } else {
+        setSavedRoutingKey(currentRoutingKey)
+        setAttachmentsSaveStatus('saved')
+        window.setTimeout(() => {
+          setAttachmentsSaveStatus((s) => (s === 'saved' ? 'idle' : s))
+        }, 1500)
+      }
+    } finally {
+      setAttachmentsSaving(false)
+    }
+  }
+
+  async function loadSOP() {
+    try {
+      // Try to load from server
+      const { data: sopData, error: sopError } = await supabase
+        .from('sops')
+        .select('*')
+        .eq('id', sopId)
+        .single()
+
+      if (sopError || !sopData) {
+        setLoadedFromServer(false)
+        // Try loading from draft
+        const draft = await getDraft(sopId)
+        if (draft) {
+          // Convert draft to local state
+          setSop({
+            id: draft.id,
+            title: draft.title,
+            description: draft.description,
+            owner: '',
+            published: false,
+            created_at: new Date(draft.lastModified).toISOString(),
+          })
+          // Convert draft steps
+          const draftSteps: SOPStep[] = draft.steps.map((s) => ({
+            id: s.id,
+            sop_id: sopId,
+            idx: s.idx,
+            title: s.title,
+            instructions: s.instructions,
+            video_path: s.videoPath,
+            thumbnail_path: s.thumbnailPath,
+            image_path: s.imagePath,
+            duration_ms: s.duration_ms,
+          }))
+          setSteps(draftSteps)
+          // Load annotations from draft
+          const annsMap: Record<string, StepAnnotation[]> = {}
+          draft.steps.forEach((s) => {
+            if (s.annotations.length > 0) {
+              annsMap[s.id] = s.annotations
+            }
+          })
+          setAnnotations(annsMap)
+          if (draftSteps.length > 0) {
+            setCurrentStepId(draftSteps[0].id)
+          }
+          setLoading(false)
+          return
+        }
+        setLoading(false)
+        return
+      }
+
+      const serverUpdatedMs = sopData.updated_at ? Date.parse(String(sopData.updated_at)) : 0
+      const localDraft = await getDraft(sopId)
+      const restoreLocalDraft =
+        !!localDraft && localDraftHasUnsavedEdits(localDraft, serverUpdatedMs)
+
+      setLoadedFromServer(true)
+
+      if (restoreLocalDraft && localDraft) {
+        baselineDraftSyncRef.current = false
+        setSop({
+          ...(sopData as SOP),
+          title: localDraft.title,
+          description: localDraft.description,
+        })
+        const draftSteps: SOPStep[] = localDraft.steps.map((s) => ({
+          id: s.id,
+          sop_id: sopId,
+          idx: s.idx,
+          title: s.title,
+          instructions: s.instructions,
+          video_path: s.videoPath,
+          thumbnail_path: s.thumbnailPath,
+          image_path: s.imagePath,
+          duration_ms: s.duration_ms,
+        }))
+        setSteps(draftSteps)
+        const annsMap: Record<string, StepAnnotation[]> = {}
+        localDraft.steps.forEach((s) => {
+          if (s.annotations.length > 0) {
+            annsMap[s.id] = s.annotations
+          }
+        })
+        setAnnotations(annsMap)
+        if (draftSteps.length > 0) {
+          setCurrentStepId(draftSteps[0].id)
+        }
+        setHasUnsavedChanges(true)
+      } else {
+        baselineDraftSyncRef.current = true
+        setSop(sopData as SOP)
+
+        // Load steps
+        const { data: stepsData } = await supabase
+          .from('sop_steps')
+          .select('*')
+          .eq('sop_id', sopId)
+          .order('idx', { ascending: true })
+
+        if (stepsData) {
+          setSteps(stepsData as SOPStep[])
+          if (stepsData.length > 0) {
+            setCurrentStepId(stepsData[0].id)
+          }
+        }
+
+        // Load annotations
+        if (stepsData && stepsData.length > 0) {
+          const stepIds = stepsData.map((s: SOPStep) => s.id)
+          const { data: annsData } = await supabase
+            .from('step_annotations')
+            .select('*')
+            .in('step_id', stepIds)
+
+          if (annsData) {
+            const annsMap: Record<string, StepAnnotation[]> = {}
+            annsData.forEach((ann: StepAnnotation) => {
+              if (!annsMap[ann.step_id]) {
+                annsMap[ann.step_id] = []
+              }
+              annsMap[ann.step_id].push(ann as StepAnnotation)
+            })
+            setAnnotations(annsMap)
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error loading SOP:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Load video or image for current step
+  useEffect(() => {
+    if (!currentStepId) return
+
+    const step = steps.find((s) => s.id === currentStepId)
+    if (!step) return
+
+    // Prefer image when present (even if video_path also exists).
+    if (step.image_path) {
+      setVideoUrl(null)
+      loadImageUrl(step.image_path)
+    } else if (step.video_path) {
+      setImageUrl(null)
+      loadVideoUrl(step.video_path)
+    } else {
+      setVideoUrl(null)
+      setImageUrl(null)
+      loadLocalVideo()
+      loadLocalImage()
+    }
+
+    // Reset time range when switching steps
+    setStartTime(0)
+    setEndTime(step.duration_ms ?? 0)
+    setSelectedAnnotationId(null)
+    setCutMode(false)
+    setCutError(null)
+  }, [currentStepId, steps])
+
+  // Sync TimeBar with selected annotation's times (not while editing video range)
+  useEffect(() => {
+    if (cutMode || speedMode || !selectedAnnotationId || !currentStepId) return
+    const stepAnns = annotations[currentStepId] || []
+    const selectedAnn = stepAnns.find((ann) => ann.id === selectedAnnotationId)
+    if (selectedAnn) {
+      setStartTime(selectedAnn.t_start_ms)
+      setEndTime(selectedAnn.t_end_ms)
+    }
+  }, [cutMode, speedMode, selectedAnnotationId, annotations, currentStepId])
+
+  useEffect(() => {
+    if (!isVideoCutEnabled && cutMode) {
+      setCutMode(false)
+      setCutError(null)
+    }
+    if (!isVideoCutEnabled && speedMode) {
+      setSpeedMode(false)
+      setSpeedError(null)
+    }
+  }, [isVideoCutEnabled, cutMode, speedMode])
+
+  // Keep instructions ref in sync when switching steps
+  useEffect(() => {
+    if (currentStepId) {
+      const step = steps.find((s) => s.id === currentStepId)
+      stepInstructionsRef.current = step?.instructions ?? ''
+    }
+  }, [currentStepId, steps])
+
+  useEffect(() => {
+    if (!isVideoPreviewSpeedEnabled) return
+    setPlaybackRate(1)
+  }, [currentStepId, isVideoPreviewSpeedEnabled])
+
+  // Save draft when annotations (or other draft data) change, so we always persist latest state
+  useEffect(() => {
+    if (!sop) return
+    if (skipNextDraftPersistRef.current) {
+      skipNextDraftPersistRef.current = false
+      return
+    }
+    void saveDraftState()
+  }, [sop, steps, annotations])
+
+  // Exit reorder mode if steps count changes underneath (add/delete/sync)
+  useEffect(() => {
+    setReorderMode(false)
+    setReorderOrderIds(null)
+  }, [steps.length, sopId])
+
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { delay: 350, tolerance: 8 },
+    })
+  )
+
+  function orderedStepsForChips(): SOPStep[] {
+    if (!reorderMode || !reorderOrderIds) return steps
+    const byId = new Map(steps.map((s) => [s.id, s]))
+    const ordered = reorderOrderIds.map((id) => byId.get(id)).filter((s): s is SOPStep => !!s)
+    // If something went out of sync, fall back to current steps.
+    return ordered.length === steps.length ? ordered : steps
+  }
+
+  function handleReorderDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const ids = reorderOrderIds ?? steps.map((s) => s.id)
+    const oldIndex = ids.findIndex((id) => id === String(active.id))
+    const newIndex = ids.findIndex((id) => id === String(over.id))
+    if (oldIndex < 0 || newIndex < 0) return
+    setReorderOrderIds(arrayMove(ids, oldIndex, newIndex))
+  }
+  async function finishReorderMode(apply: boolean) {
+    if (!apply || !reorderOrderIds) {
+      setReorderMode(false)
+      setReorderOrderIds(null)
+      return
+    }
+    const byId = new Map(steps.map((s) => [s.id, s]))
+    const reordered = reorderOrderIds.map((id) => byId.get(id)).filter((s): s is SOPStep => !!s)
+    const renumbered = renumberSteps(reordered)
+    setSteps(renumbered)
+    setReorderMode(false)
+    setReorderOrderIds(null)
+    if (editAsDraft) setHasUnsavedChanges(true)
+  }
+
+  async function loadVideoUrl(videoPath: string) {
+    try {
+      const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(videoPath)}`)
+      if (res.ok) {
+        const { url } = await res.json()
+        setVideoUrl(url)
+      } else {
+        const text = await res.text()
+        let errorMessage: string
+        try {
+          const errorData = JSON.parse(text) as { error?: string }
+          errorMessage = (errorData?.error ?? text) || `HTTP ${res.status}`
+        } catch {
+          errorMessage = text || `HTTP ${res.status} ${res.statusText}`
+        }
+
+        // If file not found in storage (404/500), try loading from IndexedDB (local draft)
+        const notFound = res.status === 404 || (res.status === 500 && (errorMessage === 'Object not found' || errorMessage.includes('not found')))
+        if (notFound) {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('Video not found in storage, trying IndexedDB:', videoPath)
+          }
+          loadLocalVideo()
+        } else if (res.status === 401 || res.status === 403) {
+          // No access (e.g. viewing draft as non-owner); try local draft
+          loadLocalVideo()
+        } else {
+          if (process.env.NODE_ENV === 'development') {
+            console.error('Error loading video URL:', res.status, errorMessage, videoPath)
+          }
+        }
+      }
+    } catch (err) {
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Error loading video URL:', err)
+      }
+      // Fallback to IndexedDB on network errors
+      loadLocalVideo()
+    }
+  }
+
+  async function loadLocalVideo() {
+    if (!currentStepId) return
+    const blob = await getVideoBlob(currentStepId)
+    if (blob) {
+      setVideoUrl(URL.createObjectURL(blob))
+    } else {
+      setVideoUrl(null)
+    }
+  }
+
+  /** R2 object is replaced at same key; clear <video> then reload so Range requests match the new file (avoids 416). */
+  function refreshVideoAfterR2Replace(videoPath: string) {
+    setVideoUrl(null)
+    queueMicrotask(() => {
+      void loadVideoUrl(videoPath)
+    })
+  }
+
+  async function loadImageUrl(imagePath: string) {
+    try {
+      const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(imagePath)}`)
+      if (res.ok) {
+        const { url } = await res.json()
+        setImageUrl(url)
+      } else {
+        const notFound = res.status === 404 || res.status === 500
+        if (notFound) loadLocalImage()
+        else setImageUrl(null)
+      }
+    } catch {
+      loadLocalImage()
+    }
+  }
+
+  async function loadLocalImage() {
+    if (!currentStepId) return
+    const blob = await getImageBlob(currentStepId)
+    if (blob) {
+      setImageUrl(URL.createObjectURL(blob))
+    } else {
+      setImageUrl(null)
+    }
+  }
+
+  const currentStep = steps.find((s) => s.id === currentStepId)
+  const currentStepOrdinal =
+    currentStep != null ? steps.findIndex((s) => s.id === currentStep.id) + 1 : 0
+  const currentAnnotations = currentStepId ? annotations[currentStepId] || [] : []
+  /** Same notion of “has media” as the StepPlayer branch: DB paths and/or resolved blob/signed URLs. */
+  const hasEditorMedia =
+    !!currentStep &&
+    !!(currentStep.video_path || currentStep.image_path || videoUrl || imageUrl)
+  /** No annotation selection UX while editing cut/speed range on the timeline. */
+  const editingAnnotationId =
+    cutMode || speedMode ? null : selectedAnnotationId
+  const selectedAnnotationKind = editingAnnotationId
+    ? currentAnnotations.find((a) => a.id === editingAnnotationId)?.kind
+    : undefined
+  const arrowToolActive =
+    !cutMode && !speedMode && selectedAnnotationKind === 'arrow'
+  const labelToolActive =
+    !cutMode && !speedMode && selectedAnnotationKind === 'label'
+
+  async function handleVideoCaptured(blob: Blob, duration: number) {
+    if (!currentStepId) return
+
+    const updatedSteps = steps.map((s) =>
+      s.id === currentStepId ? { ...s, duration_ms: duration } : s
+    )
+    setSteps(updatedSteps)
+
+    if (isOffline) {
+      // Blob already saved in IndexedDB by VideoCapture; play from local
+      loadLocalVideo()
+      return
+    }
+
+    await processAndUploadVideo(blob, currentStepId, duration)
+  }
+
+  async function handleImageCaptured(blob: Blob) {
+    if (!currentStepId || !sopId) return
+
+    if (isOffline) {
+      loadLocalImage()
+      return
+    }
+
+    try {
+      const imageCt = blob.type?.startsWith('image/') ? blob.type : 'image/jpeg'
+      const signRes = await fetch('/api/videos/sign-upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sopId,
+          stepId: currentStepId,
+          file: 'image' as const,
+          imageContentType: imageCt,
+        }),
+      })
+      if (!signRes.ok) throw new Error('Failed to get image upload URL')
+      const { signedUrl, storagePath } = (await signRes.json()) as {
+        signedUrl: string
+        storagePath: string
+      }
+      const putRes = await fetch(signedUrl, {
+        method: 'PUT',
+        body: blob,
+        headers: { 'Content-Type': imageCt },
+      })
+      if (!putRes.ok) throw new Error('Image upload failed')
+
+      await markImageUploaded(currentStepId)
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.id === currentStepId ? { ...s, image_path: storagePath } : s
+        )
+      )
+      loadImageUrl(storagePath)
+      if (editAsDraft) {
+        setHasUnsavedChanges(true)
+      } else {
+        const { error } = await supabase
+          .from('sop_steps')
+          .update({ image_path: storagePath })
+          .eq('id', currentStepId)
+        if (error) {
+          console.error('Failed to persist image_path to DB:', error)
+        } else {
+          loadSOP()
+        }
+      }
+    } catch (err) {
+      console.error('Error uploading image:', err)
+      loadLocalImage()
+    }
+  }
+
+  async function handleCut() {
+    if (!isVideoCutEnabled) return
+    if (!currentStepId || !currentStep || currentStep.image_path) return
+    const duration = videoDuration || currentStep.duration_ms || 0
+    if (duration <= 0 || startTime >= endTime || endTime > duration) return
+    setCutError(null)
+    setCutProgress(0)
+
+    if (isOffline) {
+      setCutError('Cut requires internet connection (server-side processing).')
+      return
+    }
+
+    const cutLen = endTime - startTime
+    const newDuration = duration - cutLen
+    const cutStartMs = startTime
+    const cutEndMs = endTime
+    const stepId = currentStepId
+    const t = currentTime
+
+    try {
+      // Server-side cut (native ffmpeg). Optional async job + poll on Vercel for long runs.
+      const res = await fetch('/api/videos/cut', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sopId,
+          stepId,
+          startMs: cutStartMs,
+          endMs: cutEndMs,
+          ...(currentStep.video_path ? { videoPath: currentStep.video_path } : {}),
+          ...(isVideoCutAsync ? { async: true } : {}),
+        }),
+      })
+
+      if (res.status === 202) {
+        const { jobId } = (await res.json()) as { jobId: string }
+        const deadline = Date.now() + 5 * 60 * 1000
+        let lastStatus = 'pending'
+        while (Date.now() < deadline) {
+          setCutProgress(50)
+          await new Promise((r) => setTimeout(r, 600))
+          const jr = await fetch(`/api/videos/jobs/${jobId}`)
+          if (!jr.ok) continue
+          const j = (await jr.json()) as { status: string; error?: string | null }
+          lastStatus = j.status
+          if (j.status === 'completed') break
+          if (j.status === 'failed') throw new Error(j.error ?? 'Cut failed')
+        }
+        if (lastStatus !== 'completed') {
+          throw new Error('Cut timed out — try again or use a shorter clip')
+        }
+      } else if (!res.ok) {
+        const text = await res.text()
+        let msg = text
+        try {
+          const j = JSON.parse(text) as { error?: string }
+          msg = j.error ?? text
+        } catch {}
+        throw new Error(msg || `Cut failed (HTTP ${res.status})`)
+      }
+
+      setSteps((prev) =>
+        prev.map((s) => (s.id === stepId ? { ...s, duration_ms: newDuration } : s))
+      )
+      setAnnotations((prev) => {
+        const stepAnns = prev[stepId] || []
+        /** Map timeline after removing [cutStartMs, cutEndMs); interior points clip to boundaries. */
+        function mapCutT(t: number): number | null {
+          if (t <= cutStartMs) return t
+          if (t >= cutEndMs) return t - cutLen
+          return null
+        }
+        const updated = stepAnns
+          .map((ann) => {
+            let a = mapCutT(ann.t_start_ms)
+            let b = mapCutT(ann.t_end_ms)
+            if (a === null) a = cutStartMs
+            if (b === null) b = cutEndMs - cutLen
+            if (a >= b) return null
+            return { ...ann, t_start_ms: a, t_end_ms: b }
+          })
+          .filter((a): a is StepAnnotation => a !== null)
+        return { ...prev, [stepId]: updated }
+      })
+      setStartTime(0)
+      setEndTime(newDuration)
+      setCutMode(false)
+      setCurrentTime(Math.min(t, cutStartMs >= t ? t : Math.max(0, t - cutLen)))
+
+      // Video is overwritten at the same key; invalidate cache + remount player (avoids 416 Range errors).
+      refreshVideoAfterR2Replace(currentStep.video_path ?? '')
+
+      await regenerateAndUploadThumbnailFromStorage(stepId)
+    } catch (err) {
+      setCutError(err instanceof Error ? err.message : 'Cut failed')
+    } finally {
+      setCutProgress(null)
+    }
+  }
+
+  async function handleSpeedSegment() {
+    if (!isVideoCutEnabled) return
+    if (!currentStepId || !currentStep || currentStep.image_path) return
+    const duration = videoDuration || currentStep.duration_ms || 0
+    if (duration <= 0 || startTime >= endTime || endTime > duration) return
+    setSpeedError(null)
+    setSpeedProgress(0)
+
+    if (isOffline) {
+      setSpeedError('Speed change requires internet (server-side processing).')
+      setSpeedProgress(null)
+      return
+    }
+
+    const t0 = startTime
+    const t1 = endTime
+    const L = t1 - t0
+    const S = speedFactor
+    const delta = L - L / S
+    const newDuration = duration - delta
+    const stepId = currentStepId
+    const t = currentTime
+
+    try {
+      const res = await fetch('/api/videos/speed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sopId,
+          stepId,
+          startMs: t0,
+          endMs: t1,
+          speedFactor: S,
+          ...(currentStep.video_path ? { videoPath: currentStep.video_path } : {}),
+          ...(isVideoCutAsync ? { async: true } : {}),
+        }),
+      })
+
+      if (res.status === 202) {
+        const { jobId } = (await res.json()) as { jobId: string }
+        const deadline = Date.now() + 5 * 60 * 1000
+        let lastStatus = 'pending'
+        while (Date.now() < deadline) {
+          setSpeedProgress(50)
+          await new Promise((r) => setTimeout(r, 600))
+          const jr = await fetch(`/api/videos/jobs/${jobId}`)
+          if (!jr.ok) continue
+          const j = (await jr.json()) as { status: string; error?: string | null }
+          lastStatus = j.status
+          if (j.status === 'completed') break
+          if (j.status === 'failed') throw new Error(j.error ?? 'Speed change failed')
+        }
+        if (lastStatus !== 'completed') {
+          throw new Error('Timed out — try again or use a shorter segment')
+        }
+      } else if (!res.ok) {
+        const text = await res.text()
+        let msg = text
+        try {
+          const j = JSON.parse(text) as { error?: string }
+          msg = j.error ?? text
+        } catch {}
+        throw new Error(msg || `Failed (HTTP ${res.status})`)
+      }
+
+      setSteps((prev) =>
+        prev.map((s) => (s.id === stepId ? { ...s, duration_ms: newDuration } : s))
+      )
+      setAnnotations((prev) => {
+        const stepAnns = prev[stepId] || []
+        /** Monotonic timeline map for segment speed change (keeps annotations that span [t0,t1]). */
+        function mapSpeedT(t: number): number {
+          if (t <= t0) return t
+          if (t >= t1) return t - delta
+          return t0 + (t - t0) / S
+        }
+        const updated = stepAnns
+          .map((ann) => {
+            const t_start = mapSpeedT(ann.t_start_ms)
+            const t_end = mapSpeedT(ann.t_end_ms)
+            if (t_start >= t_end) return null
+            return { ...ann, t_start_ms: t_start, t_end_ms: t_end }
+          })
+          .filter((a): a is StepAnnotation => a !== null)
+        return { ...prev, [stepId]: updated }
+      })
+      setStartTime(0)
+      setEndTime(newDuration)
+      setSpeedMode(false)
+      {
+        let nt = t
+        if (t >= t1) nt = t - delta
+        else if (t > t0) nt = t0 + (t - t0) / S
+        setCurrentTime(Math.min(Math.max(0, nt), newDuration))
+      }
+
+      refreshVideoAfterR2Replace(currentStep.video_path ?? '')
+      await regenerateAndUploadThumbnailFromStorage(stepId)
+    } catch (err) {
+      setSpeedError(err instanceof Error ? err.message : 'Speed change failed')
+    } finally {
+      setSpeedProgress(null)
+    }
+  }
+
+  async function regenerateAndUploadThumbnailFromStorage(stepId: string) {
+    const step = steps.find((s) => s.id === stepId)
+    if (!step?.video_path) return
+
+    const url = await fetchSignedMediaUrl(step.video_path)
+    if (!url) return
+
+    const fileRes = await fetch(url)
+    if (!fileRes.ok) return
+    const videoBlob = await fileRes.blob()
+    const thumbnailBlob = await generateThumbnail(videoBlob)
+
+    const signRes = await fetch('/api/videos/sign-upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
+    })
+    if (!signRes.ok) return
+    const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = (await signRes.json()) as {
+      signedUrl: string
+      storagePath: string
+    }
+    const putRes = await fetch(thumbSignedUrl, {
+      method: 'PUT',
+      body: thumbnailBlob,
+      headers: { 'Content-Type': 'image/jpeg' },
+    })
+    if (!putRes.ok) return
+
+    setSteps((prev) =>
+      prev.map((s) => (s.id === stepId ? { ...s, thumbnail_path: thumbnailStoragePath } : s))
+    )
+    if (!editAsDraft) {
+      await supabase
+        .from('sop_steps')
+        .update({ thumbnail_path: thumbnailStoragePath })
+        .eq('id', stepId)
+    } else {
+      setHasUnsavedChanges(true)
+    }
+  }
+
+  async function uploadTrimmedVideoWithoutCompression(blob: Blob, stepId: string, durationMs: number) {
+    if (currentStepId === stepId) {
+      loadLocalVideo()
+    }
+    setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'uploading' }))
+    setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+
+    try {
+      const thumbnailBlob = await generateThumbnail(blob)
+      const videoCt = blob.type?.startsWith('video/') ? blob.type : 'video/mp4'
+
+      const [resVideo, resThumb] = await Promise.all([
+        fetch('/api/videos/sign-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sopId,
+            stepId,
+            file: 'video' as const,
+            videoContentType: videoCt,
+          }),
+        }),
+        fetch('/api/videos/sign-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
+        }),
+      ])
+
+      if (!resVideo.ok) throw new Error('Failed to get video upload URL')
+      if (!resThumb.ok) throw new Error('Failed to get thumbnail upload URL')
+
+      const { signedUrl: videoSignedUrl, storagePath: videoStoragePath } = await resVideo.json()
+      const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = await resThumb.json()
+
+      const [videoResp, thumbResp] = await Promise.all([
+        fetch(videoSignedUrl, {
+          method: 'PUT',
+          body: blob,
+          headers: { 'Content-Type': videoCt },
+        }),
+        fetch(thumbSignedUrl, {
+          method: 'PUT',
+          body: thumbnailBlob,
+          headers: { 'Content-Type': 'image/jpeg' },
+        }),
+      ])
+      if (!videoResp.ok) throw new Error('Video upload failed')
+      if (!thumbResp.ok) throw new Error('Thumbnail upload failed')
+
+      await markVideoUploaded(stepId)
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.id === stepId
+            ? {
+                ...s,
+                video_path: videoStoragePath,
+                thumbnail_path: thumbnailStoragePath,
+                duration_ms: durationMs,
+              }
+            : s
+        )
+      )
+      loadVideoUrl(videoStoragePath)
+      if (editAsDraft) {
+        setHasUnsavedChanges(true)
+      } else {
+        const { error } = await supabase
+          .from('sop_steps')
+          .update({
+            video_path: videoStoragePath,
+            thumbnail_path: thumbnailStoragePath,
+            duration_ms: durationMs,
+          })
+          .eq('id', stepId)
+        if (!error) loadSOP()
+      }
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: null }))
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      setStepUploadResult((prev) => ({ ...prev, [stepId]: 'original' }))
+      setStepUploadSizes((prev) => ({ ...prev, [stepId]: { before: blob.size, after: blob.size } }))
+      setTimeout(() => {
+        setStepUploadResult((prev) => ({ ...prev, [stepId]: null }))
+        setStepUploadSizes((prev) => ({ ...prev, [stepId]: null }))
+      }, 5000)
+    } catch (err) {
+      console.error('Upload trimmed video failed:', err)
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'failed' }))
+    }
+  }
+
+  async function processAndUploadVideo(blob: Blob, stepId: string, durationMs: number) {
+    if (currentStepId === stepId) {
+      loadLocalVideo()
+    }
+    setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'compressing' }))
+    setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+
+    try {
+      let videoBlob: Blob
+      let usedCompression = false
+      try {
+        videoBlob = await compressVideoWithMediabunny(blob, {
+          onProgress: (p) => {
+            setStepUploadProgress((prev) => ({ ...prev, [stepId]: Math.round(p * 100) }))
+          },
+        })
+        usedCompression = true
+      } catch (err) {
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('Compression skipped:', err)
+        }
+        videoBlob = blob
+      }
+
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'uploading' }))
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      const thumbnailBlob = await generateThumbnail(videoBlob)
+      const videoCt = videoBlob.type?.startsWith('video/') ? videoBlob.type : 'video/mp4'
+
+      const [resVideo, resThumb] = await Promise.all([
+        fetch('/api/videos/sign-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sopId,
+            stepId,
+            file: 'video' as const,
+            videoContentType: videoCt,
+          }),
+        }),
+        fetch('/api/videos/sign-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
+        }),
+      ])
+
+      if (!resVideo.ok) throw new Error('Failed to get video upload URL')
+      if (!resThumb.ok) throw new Error('Failed to get thumbnail upload URL')
+
+      const { signedUrl: videoSignedUrl, storagePath: videoStoragePath } = await resVideo.json()
+      const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = await resThumb.json()
+
+      const [videoResp, thumbResp] = await Promise.all([
+        fetch(videoSignedUrl, {
+          method: 'PUT',
+          body: videoBlob,
+          headers: { 'Content-Type': videoCt },
+        }),
+        fetch(thumbSignedUrl, {
+          method: 'PUT',
+          body: thumbnailBlob,
+          headers: { 'Content-Type': 'image/jpeg' },
+        }),
+      ])
+      if (!videoResp.ok) throw new Error('Video upload failed')
+      if (!thumbResp.ok) throw new Error('Thumbnail upload failed')
+
+      await markVideoUploaded(stepId)
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.id === stepId
+            ? {
+                ...s,
+                video_path: videoStoragePath,
+                thumbnail_path: thumbnailStoragePath,
+                duration_ms: durationMs,
+              }
+            : s
+        )
+      )
+      loadVideoUrl(videoStoragePath)
+      if (editAsDraft) {
+        setHasUnsavedChanges(true)
+      } else {
+        const { error } = await supabase
+          .from('sop_steps')
+          .update({
+            video_path: videoStoragePath,
+            thumbnail_path: thumbnailStoragePath,
+            duration_ms: durationMs,
+          })
+          .eq('id', stepId)
+        if (!error) loadSOP()
+      }
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: null }))
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      setStepUploadResult((prev) => ({ ...prev, [stepId]: usedCompression ? 'compressed' : 'original' }))
+      setStepUploadSizes((prev) => ({ ...prev, [stepId]: { before: blob.size, after: videoBlob.size } }))
+      setTimeout(() => {
+        setStepUploadResult((prev) => ({ ...prev, [stepId]: null }))
+        setStepUploadSizes((prev) => ({ ...prev, [stepId]: null }))
+      }, 5000)
+    } catch (err) {
+      console.error('Error in video pipeline:', err)
+      setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'failed' }))
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      // Blob remains in IndexedDB for retry
+    }
+  }
+
+  function handleStepInstructionsChange(stepId: string, instructions: string) {
+    stepInstructionsRef.current = instructions
+    setSteps((prev) =>
+      prev.map((s) => (s.id === stepId ? { ...s, instructions } : s))
+    )
+    if (editAsDraft) setHasUnsavedChanges(true)
+  }
+
+  async function handleStepInstructionsBlur(stepId: string) {
+    if (editAsDraft) return
+    const value = stepInstructionsRef.current
+    if (isOffline) return
+    await supabase
+      .from('sop_steps')
+      .update({ instructions: value || null })
+      .eq('id', stepId)
+  }
+
+  async function handleAddStep() {
+    const newIdx = steps.length
+    const newStepId = nanoid()
+    const newStep: SOPStep = {
+      id: newStepId,
+      sop_id: sopId,
+      idx: newIdx,
+      title: `Step ${newIdx + 1}`,
+    }
+
+    if (editAsDraft) {
+      setSteps((prev) => [...prev, newStep])
+      setCurrentStepId(newStepId)
+      setAnnotations((prev) => ({ ...prev, [newStepId]: [] }))
+      setHasUnsavedChanges(true)
+      return
+    }
+    if (isOffline) {
+      const draft = await getDraft(sopId)
+      if (draft) {
+        draft.steps.push({
+          id: newStepId,
+          idx: newIdx,
+          title: `Step ${newIdx + 1}`,
+          annotations: [],
+        })
+        await saveDraft({ ...draft, lastModified: Date.now() })
+      }
+      setSteps((prev) => [...prev, newStep])
+      setCurrentStepId(newStepId)
+      setAnnotations((prev) => ({ ...prev, [newStepId]: [] }))
+      return
+    }
+    const { data, error } = await supabase
+      .from('sop_steps')
+      .insert({ sop_id: sopId, idx: newIdx, title: newStep.title })
+      .select()
+      .single()
+
+    if (!error && data) {
+      setSteps((prev) => [...prev, data as SOPStep])
+      setCurrentStepId(data.id)
+      setAnnotations((prev) => ({ ...prev, [data.id]: [] }))
+    }
+  }
+
+  async function handleDeleteStep(stepId: string, e?: React.MouseEvent) {
+    e?.stopPropagation()
+    if (steps.length <= 1) return
+    if (editAsDraft) {
+      setSteps((prev) => renumberSteps(prev.filter((s) => s.id !== stepId)))
+      setAnnotations((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
+      if (currentStepId === stepId) {
+        const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
+        setCurrentStepId(remaining[0]?.id ?? null)
+        setVideoUrl(null)
+        setImageUrl(null)
+      }
+      setHasUnsavedChanges(true)
+      await deleteVideoBlob(stepId)
+      await deleteImageBlob(stepId)
+      return
+    }
+    if (isOffline) {
+      const draft = await getDraft(sopId)
+      if (draft) {
+        draft.steps = renumberDraftSteps(draft.steps.filter((s) => s.id !== stepId))
+        await saveDraft({ ...draft, lastModified: Date.now() })
+      }
+      setSteps((prev) => renumberSteps(prev.filter((s) => s.id !== stepId)))
+      setAnnotations((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
+      if (currentStepId === stepId) {
+        const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
+        setCurrentStepId(remaining[0]?.id ?? null)
+        setVideoUrl(null)
+        setImageUrl(null)
+      }
+      await deleteVideoBlob(stepId)
+      await deleteImageBlob(stepId)
+      return
+    }
+    const { error } = await supabase.from('sop_steps').delete().eq('id', stepId)
+    if (error) {
+      console.error('Error deleting step:', error)
+      return
+    }
+    const remaining = renumberSteps(steps.filter((s) => s.id !== stepId))
+    setSteps(remaining)
+    setAnnotations((prev) => {
+      const next = { ...prev }
+      delete next[stepId]
+      return next
+    })
+    if (currentStepId === stepId) {
+      setCurrentStepId(remaining[0]?.id ?? null)
+      setVideoUrl(null)
+      setImageUrl(null)
+    }
+    await deleteVideoBlob(stepId)
+    await deleteImageBlob(stepId)
+    await Promise.all(
+      remaining.map((s) =>
+        supabase.from('sop_steps').update({ idx: s.idx, title: s.title }).eq('id', s.id)
+      )
+    )
+  }
+
+  /** Leave cut/speed and timeline range handles when focusing annotations (canvas or toolbar). */
+  const exitVideoEditModesForAnnotation = useCallback(() => {
+    setCutMode(false)
+    setSpeedMode(false)
+    setCutError(null)
+    setSpeedError(null)
+    setTimelineDragMode('seek')
+  }, [])
+
+  const handleSelectAnnotation = useCallback(
+    (id: string | null) => {
+      if (id !== null) {
+        exitVideoEditModesForAnnotation()
+      }
+      setSelectedAnnotationId(id)
+    },
+    [exitVideoEditModesForAnnotation],
+  )
+
+  async function handleAddAnnotation(kind: 'arrow' | 'label') {
+    // Get the current step ID directly from state to avoid closure issues
+    const stepId = currentStepId
+    if (!stepId) {
+      console.error('Cannot add annotation: no step selected')
+      return
+    }
+
+    // Verify the step exists
+    const step = steps.find((s) => s.id === stepId)
+    if (!step) {
+      console.error('Cannot add annotation: step not found', { stepId, steps })
+      return
+    }
+
+    exitVideoEditModesForAnnotation()
+
+    // Determine default times for new annotation
+    let defaultStartTime = startTime
+    let defaultEndTime = endTime
+
+    // If start and end are both 0, or if they're the same, set a default 3-second range from current time
+    if ((defaultStartTime === 0 && defaultEndTime === 0) || defaultStartTime === defaultEndTime) {
+      defaultStartTime = currentTime
+      defaultEndTime = Math.min(currentTime + 3000, step.duration_ms || currentTime + 3000)
+      setStartTime(defaultStartTime)
+      setEndTime(defaultEndTime)
+    }
+
+    const newAnn: StepAnnotation = {
+      id: nanoid(),
+      step_id: stepId, // Use the local variable to ensure we have the correct step ID
+      t_start_ms: defaultStartTime,
+      t_end_ms: defaultEndTime,
+      kind,
+      x: 0.5,
+      y: kind === 'label' ? 0.22 : 0.5, // Labels start near top to avoid play button; arrows stay centered
+      angle: kind === 'arrow' ? 0 : undefined,
+      text: kind === 'label' ? 'Label' : undefined,
+style: kind === 'arrow'
+        ? { color: '#00ff00', strokeWidth: 35 } // Arrow size (toolbar default = starting size)
+        : { color: '#ffffff', fontSize: 28 }, // White label, larger default
+    }
+
+    // Select the newly created annotation so user can immediately edit its times
+    setSelectedAnnotationId(newAnn.id)
+
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Adding annotation:', { 
+        kind, 
+        newAnn, 
+        startTime, 
+        endTime, 
+        currentTime,
+        currentStepId: stepId,
+        stepTitle: step.title,
+        stepIdx: step.idx,
+        allSteps: steps.map(s => ({ id: s.id, title: s.title, idx: s.idx }))
+      })
+    }
+
+    // Get current annotations for this specific step (functional update to avoid races)
+    setAnnotations((prev) => {
+      const stepAnnotations = prev[stepId] || []
+      return { ...prev, [stepId]: [...stepAnnotations, newAnn] }
+    })
+
+    if (editAsDraft) {
+      setHasUnsavedChanges(true)
+      return
+    }
+    // Save to server only when the step exists in DB and not editing as draft.
+    if (!isOffline && isStepIdFromDb(stepId)) {
+      const dbAnnotation: Record<string, unknown> = {
+        step_id: newAnn.step_id,
+        t_start_ms: newAnn.t_start_ms,
+        t_end_ms: newAnn.t_end_ms,
+        kind: newAnn.kind,
+        x: newAnn.x,
+        y: newAnn.y,
+      }
+      if (newAnn.angle !== undefined) dbAnnotation.angle = newAnn.angle
+      if (newAnn.text !== undefined) dbAnnotation.text = newAnn.text
+      if (newAnn.style) dbAnnotation.style = newAnn.style
+
+      const res = await fetch('/api/annotations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(dbAnnotation),
+      })
+      const body = await res.json().catch(() => ({}))
+      const data = res.ok ? body : null
+      const err = !res.ok ? (body.error ?? res.statusText) : null
+
+      if (err) {
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Error saving annotation:', err, { stepId, dbAnnotation })
+        }
+      } else if (data?.id) {
+        const annotationWithDbId = { ...newAnn, id: data.id }
+        setAnnotations(prev => {
+          const stepAnnotations = prev[stepId] || []
+          return {
+            ...prev,
+            [stepId]: stepAnnotations.map(ann =>
+              ann.id === newAnn.id ? annotationWithDbId : ann
+            ),
+          }
+        })
+        setSelectedAnnotationId(prev => (prev === newAnn.id ? data.id : prev))
+      }
+    }
+  }
+
+  async function handleAnnotationUpdate(
+    id: string,
+    updates: Partial<StepAnnotation>
+  ) {
+    if (!currentStepId) return
+
+    setAnnotations((prev) => {
+      const stepAnns = prev[currentStepId] || []
+      const updatedAnns = stepAnns.map((ann) =>
+        ann.id === id ? { ...ann, ...updates } : ann
+      )
+      return { ...prev, [currentStepId]: updatedAnns }
+    })
+
+    // If updating times of the selected annotation, sync TimeBar
+    if (selectedAnnotationId === id && (updates.t_start_ms !== undefined || updates.t_end_ms !== undefined)) {
+      const stepAnns = annotations[currentStepId] || []
+      const ann = stepAnns.find((a) => a.id === id)
+      if (ann) {
+        const updatedAnn = { ...ann, ...updates }
+        if (updates.t_start_ms !== undefined) {
+          setStartTime(updatedAnn.t_start_ms)
+        }
+        if (updates.t_end_ms !== undefined) {
+          setEndTime(updatedAnn.t_end_ms)
+        }
+      }
+    }
+
+    if (editAsDraft) {
+      setHasUnsavedChanges(true)
+      return
+    }
+    // Save to server when not editing as draft
+    if (!isOffline) {
+      const isSavedToDb = isAnnotationIdFromDb(id)
+      if (isSavedToDb) {
+        const cleanUpdates: Record<string, unknown> = {}
+        if ('x' in updates && typeof updates.x === 'number') {
+          cleanUpdates.x = Math.max(0, Math.min(1, updates.x))
+        }
+        if ('y' in updates && typeof updates.y === 'number') {
+          cleanUpdates.y = Math.max(0, Math.min(1, updates.y))
+        }
+        if ('angle' in updates) cleanUpdates.angle = updates.angle ?? null
+        if ('text' in updates) cleanUpdates.text = updates.text ?? null
+        if ('style' in updates) cleanUpdates.style = updates.style ?? null
+        if ('t_start_ms' in updates && typeof updates.t_start_ms === 'number') {
+          cleanUpdates.t_start_ms = Math.round(updates.t_start_ms)
+        }
+        if ('t_end_ms' in updates && typeof updates.t_end_ms === 'number') {
+          cleanUpdates.t_end_ms = Math.round(updates.t_end_ms)
+        }
+        if (Object.keys(cleanUpdates).length > 0) {
+          await supabase.from('step_annotations').update(cleanUpdates).eq('id', id)
+        }
+      }
+    }
+  }
+
+  async function handleAnnotationDelete(id: string) {
+    if (!currentStepId) return
+
+    setAnnotations((prev) => {
+      const stepAnns = prev[currentStepId] || []
+      return { ...prev, [currentStepId]: stepAnns.filter((ann) => ann.id !== id) }
+    })
+
+    if (editAsDraft) {
+      setHasUnsavedChanges(true)
+      return
+    }
+    if (!isOffline && isAnnotationIdFromDb(id)) {
+      await supabase.from('step_annotations').delete().eq('id', id)
+    }
+  }
+
+  async function saveDraftState(options?: {
+    markSynced?: boolean
+    stepsOverride?: SOPStep[]
+    annotationsOverride?: Record<string, StepAnnotation[]>
+  }) {
+    if (!sop) return
+
+    const stepsToUse = options?.stepsOverride ?? steps
+    const annotationsToUse = options?.annotationsOverride ?? annotations
+    const existing = await getDraft(sop.id)
+    const now = Date.now()
+
+    let nextLastSyncedAt: number | undefined
+    if (options?.markSynced) {
+      nextLastSyncedAt = now
+    } else if (baselineDraftSyncRef.current) {
+      baselineDraftSyncRef.current = false
+      nextLastSyncedAt = now
+    } else {
+      nextLastSyncedAt = existing?.lastSyncedAt
+    }
+
+    const draft: DraftSOP = {
+      id: sop.id,
+      title: sop.title,
+      description: sop.description,
+      steps: stepsToUse.map((step) => ({
+        id: step.id,
+        idx: step.idx,
+        title: step.title,
+        instructions: step.instructions,
+        videoPath: step.video_path,
+        thumbnailPath: step.thumbnail_path,
+        imagePath: step.image_path,
+        duration_ms: step.duration_ms,
+        annotations: annotationsToUse[step.id] || [],
+      })),
+      lastModified: now,
+      ...(typeof nextLastSyncedAt === 'number' ? { lastSyncedAt: nextLastSyncedAt } : {}),
+    }
+
+    await saveDraft(draft)
+  }
+
+  async function handleUpdateDraft() {
+    if (!sop) return
+    setUpdateStatus('saving')
+    try {
+      const payload = {
+        title: sop.title,
+        description: sop.description ?? null,
+        steps: steps.map((s) => ({
+          id: s.id,
+          idx: s.idx,
+          title: s.title,
+          instructions: s.instructions ?? null,
+          video_path: s.video_path ?? null,
+          thumbnail_path: s.thumbnail_path ?? null,
+          image_path: s.image_path ?? null,
+          duration_ms: s.duration_ms ?? null,
+        })),
+        annotations: Object.fromEntries(
+          steps.map((step) => [
+            step.id,
+            (annotations[step.id] || []).map((a) => ({
+              t_start_ms: a.t_start_ms,
+              t_end_ms: a.t_end_ms,
+              kind: a.kind,
+              x: a.x,
+              y: a.y,
+              angle: a.angle,
+              text: a.text,
+              style: a.style,
+            })),
+          ])
+        ),
+      }
+      const res = await fetch(`/api/sops/${sopId}/sync`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = res.ok ? await res.json() : null
+      if (!res.ok) throw new Error((data as { error?: string })?.error ?? res.statusText)
+      const newStepIds = (data as { newStepIds?: Record<string, string> })?.newStepIds ?? {}
+      let nextSteps = steps
+      let nextAnnotationsMap = annotations
+      if (Object.keys(newStepIds).length > 0) {
+        nextSteps = steps.map((s) => ({ ...s, id: newStepIds[s.id] ?? s.id }))
+        const merged: Record<string, StepAnnotation[]> = {}
+        for (const [stepId, anns] of Object.entries(annotations)) {
+          const finalId = newStepIds[stepId] ?? stepId
+          merged[finalId] = anns.map((a) => ({ ...a, step_id: finalId }))
+        }
+        nextAnnotationsMap = merged
+        setSteps(nextSteps)
+        setAnnotations(nextAnnotationsMap)
+        setCurrentStepId((id) => (id ? newStepIds[id] ?? id : null))
+        skipNextDraftPersistRef.current = true
+      }
+      setHasUnsavedChanges(false)
+      setUpdateStatus('updated')
+      await saveDraftState({
+        markSynced: true,
+        stepsOverride: nextSteps,
+        annotationsOverride: nextAnnotationsMap,
+      })
+    } catch (err) {
+      console.error('Sync failed:', err)
+      setUpdateStatus('idle')
+    }
+  }
+
+  function fireShareViewRevalidate() {
+    void fetch(`/api/sops/${encodeURIComponent(sopId)}/revalidate-share-view`, {
+      method: 'POST',
+    }).catch(() => {})
+  }
+
+  async function handlePublishOrUpdate() {
+    if (!sop) return
+
+    if (steps.length < 1) {
+      alert('Add at least 1 step before publishing.')
+      return
+    }
+
+    const hasRoutingSelection =
+      selectedModuleIds.size > 0 ||
+      selectedMachineFamilyIds.size > 0 ||
+      selectedStationIds.size > 0 ||
+      selectedLineIds.size > 0 ||
+      selectedLineLegIds.size > 0
+
+    if (editAsDraft) {
+      // 1) Sync the full draft (title, steps, annotations) to the DB
+      await handleUpdateDraft()
+
+      // 2) If SOP is not published yet, publish it now so it appears on the dashboard
+      if (!sop.published) {
+        // Routing is chosen at publish time so operators can find it.
+        if (isOffline) {
+          alert('You are offline. Connect to the internet to publish this SOP.')
+          return
+        }
+        if (!hasRoutingSelection) {
+          // Let user decide: pick routing or use "Skip & Publish" from routing tab.
+          alert('Choose routing, or use Skip & Publish.')
+          // Draft sync may have succeeded; do not imply publish success.
+          setUpdateStatus('idle')
+          goTab('routing')
+          return
+        }
+        if (routingDirty) {
+          await saveAttachments()
+        }
+        const shareSlug = sop.share_slug || nanoid(8)
+        const { error } = await supabase
+          .from('sops')
+          .update({
+            title: sop.title,
+            description: sop.description ?? null,
+            published: true,
+            share_slug: shareSlug,
+            ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+          })
+          .eq('id', sop.id)
+
+        if (!error) {
+          setSop((prev) =>
+            prev ? { ...prev, published: true, share_slug: shareSlug } : prev
+          )
+          fireShareViewRevalidate()
+        }
+      }
+
+      // 3) Clear local draft and go back to dashboard
+      await deleteDraft(sopId)
+      router.push('/dashboard')
+      return
+    }
+
+    if (sop.published) {
+      const { error } = await supabase
+        .from('sops')
+        .update({
+          title: sop.title,
+          description: sop.description ?? null,
+          ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+        })
+        .eq('id', sop.id)
+      if (!error) {
+        setUpdateStatus('updated')
+        fireShareViewRevalidate()
+      }
+      setTimeout(() => setUpdateStatus('idle'), 2000)
+      return
+    }
+
+    // First publish (non-draft editing path): require routing choice.
+    if (isOffline) {
+      alert('You are offline. Connect to the internet to publish this SOP.')
+      return
+    }
+    if (!hasRoutingSelection) {
+      alert('Choose routing, or use Skip & Publish.')
+      // Do not imply publish success.
+      setUpdateStatus('idle')
+      goTab('routing')
+      return
+    }
+    if (routingDirty) {
+      await saveAttachments()
+    }
+
+    const shareSlug = sop.share_slug || nanoid(8)
+    const { error } = await supabase
+      .from('sops')
+      .update({
+        published: true,
+        share_slug: shareSlug,
+        ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+      })
+      .eq('id', sop.id)
+
+    if (!error) {
+      setSop({ ...sop, published: true, share_slug: shareSlug })
+      fireShareViewRevalidate()
+    }
+  }
+
+  async function handleSkipAndPublish() {
+    if (!sop) return
+
+    if (steps.length < 1) {
+      alert('Add at least 1 step before publishing.')
+      return
+    }
+
+    if (isOffline) {
+      alert('You are offline. Connect to the internet to publish this SOP.')
+      return
+    }
+
+    if (editAsDraft) {
+      await handleUpdateDraft()
+      if (!sop.published) {
+        const shareSlug = sop.share_slug || nanoid(8)
+        const { error } = await supabase
+          .from('sops')
+          .update({
+            title: sop.title,
+            description: sop.description ?? null,
+            published: true,
+            share_slug: shareSlug,
+            ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+          })
+          .eq('id', sop.id)
+
+        if (!error) {
+          setSop((prev) =>
+            prev ? { ...prev, published: true, share_slug: shareSlug } : prev
+          )
+          fireShareViewRevalidate()
+        }
+      }
+      await deleteDraft(sopId)
+      router.push('/dashboard')
+      return
+    }
+
+    if (sop.published) {
+      // Already published: "skip" doesn't apply; treat as normal update.
+      await handlePublishOrUpdate()
+      return
+    }
+
+    const shareSlug = sop.share_slug || nanoid(8)
+    const { error } = await supabase
+      .from('sops')
+      .update({
+        published: true,
+        share_slug: shareSlug,
+        ...(currentUserId ? { last_edited_by: currentUserId } : {}),
+      })
+      .eq('id', sop.id)
+
+    if (!error) {
+      setSop({ ...sop, published: true, share_slug: shareSlug })
+      fireShareViewRevalidate()
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom bg-gray-50 dark:bg-gray-900">
+        <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+      </div>
+    )
+  }
+
+  if (!sop) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center safe-top safe-bottom p-4 bg-gray-50 dark:bg-gray-900">
+        <p className="text-gray-600 dark:text-gray-400 mb-4">SOP not found</p>
+        <button
+          onClick={() => router.push('/dashboard')}
+          className="text-blue-600 dark:text-blue-400 touch-target font-medium"
+        >
+          Back to dashboard
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
+      {!canEdit && (
+        <div className="z-10 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 px-2 py-1.5 text-center text-xs text-blue-800 dark:text-blue-200">
+          View only — only the owner or a super user can edit this SOP
+        </div>
+      )}
+      {/* Sticky header - thin */}
+      <div className="z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
+        <div className="px-2 py-1.5">
+          {/* Row 1: actions */}
+          <div className="flex items-center gap-2 min-h-[44px]">
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
+              aria-label="Back to dashboard"
+            >
+              ← Back
+            </button>
+
+            {sop?.sop_number != null ? (
+              <span className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200">
+                SOP {sop.sop_number}
+              </span>
+            ) : null}
+
+            <div className="ml-auto flex items-center gap-1 shrink-0">
+              {isOffline && (
+                <span className="text-[10px] bg-yellow-200 dark:bg-yellow-800 px-1 py-0.5 rounded">
+                  Offline
+                </span>
+              )}
+              {(() => {
+                const hasRoutingSelection =
+                  selectedModuleIds.size > 0 ||
+                  selectedMachineFamilyIds.size > 0 ||
+                  selectedStationIds.size > 0 ||
+                  selectedLineIds.size > 0 ||
+                  selectedLineLegIds.size > 0
+                const showContinueOnly = tab === 'steps' && !sop.published && !hasRoutingSelection
+                if (showContinueOnly) return null
+                if (!canEdit || !loadedFromServer) return null
+                return (
+                  <button
+                    type="button"
+                    onClick={() => goTab(tab === 'routing' ? 'steps' : 'routing')}
+                    className="px-1.5 py-1.5 rounded text-xs min-w-[40px] bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                  >
+                    {tab === 'routing' ? '← Steps' : 'Routing →'}
+                  </button>
+                )
+              })()}
+              {canEdit &&
+                loadedFromServer &&
+                tab === 'routing' &&
+                !sop.published &&
+                selectedModuleIds.size === 0 &&
+                selectedMachineFamilyIds.size === 0 &&
+                selectedStationIds.size === 0 &&
+                selectedLineIds.size === 0 &&
+                selectedLineLegIds.size === 0 && (
+                  <button
+                    onClick={handleSkipAndPublish}
+                    disabled={updateStatus === 'saving'}
+                    className="px-1.5 py-1.5 rounded text-xs min-w-[40px] bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                  >
+                    Skip &amp; Publish
+                  </button>
+                )}
+              {canEdit && (
+                <button
+                  onClick={() => {
+                    const hasRoutingSelection =
+                      selectedModuleIds.size > 0 ||
+                      selectedMachineFamilyIds.size > 0 ||
+                      selectedStationIds.size > 0 ||
+                      selectedLineIds.size > 0 ||
+                      selectedLineLegIds.size > 0
+                    const isFirstPublish = !sop.published
+                    if (tab === 'steps' && isFirstPublish && !hasRoutingSelection) {
+                      if (steps.length < 1) {
+                        alert('Add at least 1 step before continuing.')
+                        return
+                      }
+                      goTab('routing')
+                      return
+                    }
+                    void handlePublishOrUpdate()
+                  }}
+                  disabled={updateStatus === 'saving' || steps.length < 1}
+                  className={`px-1.5 py-1.5 rounded text-xs min-w-[40px] ${
+                    updateStatus === 'updated'
+                      ? 'bg-yellow-500 text-black'
+                      : updateStatus === 'saving'
+                      ? 'bg-gray-400 dark:bg-gray-600 text-white'
+                      : editAsDraft
+                      ? hasUnsavedChanges
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-300 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
+                      : sop.published
+                      ? 'bg-green-600 text-white'
+                      : 'bg-gray-300 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
+                  }`}
+                >
+                  {(() => {
+                    if (steps.length < 1) return 'Add 1 step'
+                    const hasRoutingSelection =
+                      selectedModuleIds.size > 0 ||
+                      selectedMachineFamilyIds.size > 0 ||
+                      selectedStationIds.size > 0 ||
+                      selectedLineIds.size > 0 ||
+                      selectedLineLegIds.size > 0
+                    const isFirstPublish = !sop.published
+                    if (tab === 'steps' && isFirstPublish && !hasRoutingSelection) return 'Continue →'
+                    return updateStatus === 'saving'
+                      ? 'Saving…'
+                      : updateStatus === 'updated'
+                      ? 'Updated'
+                      : sop.published
+                      ? 'Update'
+                      : 'Publish'
+                  })()}
+                </button>
+              )}
+              {sop.published && sop.share_slug ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const slug = sop.share_slug as string
+                    const editorReturn = `/editor/${sopId}${
+                      tab === 'routing' ? '?tab=routing' : '?tab=steps'
+                    }`
+                    router.push(
+                      `/sop/${encodeURIComponent(slug)}?returnTo=${encodeURIComponent(editorReturn)}`
+                    )
+                  }}
+                  className="px-1.5 py-1.5 rounded text-xs min-w-[40px] bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                >
+                  View
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Row 2: title (auto-growing textarea) */}
+          <div className="pb-1 sm:pb-0">
+            {canEdit ? (
+              <textarea
+                ref={titleTextareaRef}
+                rows={1}
+                value={sop.title}
+                onChange={(e) => {
+                  setSop((prev) => (prev ? { ...prev, title: e.target.value } : null))
+                  if (editAsDraft) setHasUnsavedChanges(true)
+                }}
+                onInput={(e) => {
+                  const el = e.currentTarget
+                  el.style.height = '0px'
+                  el.style.height = `${el.scrollHeight}px`
+                }}
+                className="w-full min-w-0 text-center font-semibold text-lg sm:text-base px-0.5 py-1 bg-transparent border border-transparent rounded focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none overflow-hidden leading-tight"
+                placeholder="SOP title"
+              />
+            ) : (
+              <h1 className="w-full min-w-0 text-center font-semibold text-lg sm:text-base break-words px-0.5 py-1 leading-tight">
+                {sop.title}
+              </h1>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Routing access (simplified):
+          - New SOP (not published yet): no extra buttons while drafting steps.
+          - Existing SOP updates: single button to jump into routing (and a single "back" button inside routing). */}
+      {/* Routing navigation now lives next to Publish in the header. */}
+
+      {/* Routing (attachments) panel (editor only) */}
+      {canEdit && loadedFromServer && tab === 'routing' && (
+        <div className="px-2 py-2 safe-left safe-right border-b border-gray-200 dark:border-gray-800 bg-white/60 dark:bg-gray-900/60">
+          <div className="max-w-3xl mx-auto">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 break-words leading-tight">
+                  Routing (machine / stations)
+                </div>
+                <div className="text-xs text-gray-600 dark:text-gray-400">
+                  This controls what shows up in <span className="font-semibold">Line specific search</span>.
+                </div>
+              </div>
+              {routingDirty ? (
+                <span className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200">
+                  Unsaved changes
+                </span>
+              ) : null}
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* Machine type picker */}
+              <label className="block">
+                <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Machine type
+                </span>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMachineFamilyPickerOpen((v) => !v)
+                      setMachineFamilyQuery('')
+                      setModulePickerOpen(false)
+                      setStationPickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left"
+                    aria-expanded={machineFamilyPickerOpen}
+                  >
+                    {selectedMachineFamilyIds.size > 0
+                      ? `${selectedMachineFamilyIds.size} selected`
+                      : '(none)'}
+                  </button>
+                  {machineFamilyPickerOpen && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={machineFamilyQuery}
+                          onChange={(e) => setMachineFamilyQuery(e.target.value)}
+                          placeholder="Search machine type…"
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-72 overflow-auto p-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedMachineFamilyIds(new Set())
+                            setSelectedStationIds(new Set())
+                            setMachineFamilyPickerOpen(false)
+                          }}
+                          className="w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800"
+                        >
+                          (none)
+                        </button>
+                        {filteredMachineFamilies.map((f) => (
+                          <button
+                            key={f.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedMachineFamilyIds((prev) => {
+                                const next = new Set(prev)
+                                if (next.has(f.id)) next.delete(f.id)
+                                else next.add(f.id)
+                                return next
+                              })
+                            }}
+                            className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                              selectedMachineFamilyIds.has(f.id)
+                                ? 'bg-blue-50 dark:bg-blue-900/20'
+                                : ''
+                            }`}
+                          >
+                            {selectedMachineFamilyIds.has(f.id) ? '✓ ' : ''}
+                            {formatMachineFamilyLabel(f)}
+                          </button>
+                        ))}
+                        {filteredMachineFamilies.length === 0 && (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setMachineFamilyPickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedMachineFamilyIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedMachineFamilyIds].map((id) => {
+                      const fam = machineFamilies.find((f) => f.id === id)
+                      if (!fam) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedMachineFamilyIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">
+                            {formatMachineFamilyLabel(fam)}
+                          </span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </label>
+
+              {/* Lines picker */}
+              <div className="block">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Lines (optional)
+                </div>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLinePickerOpen((v) => !v)
+                      setLineQuery('')
+                      setMachineFamilyPickerOpen(false)
+                      setModulePickerOpen(false)
+                      setStationPickerOpen(false)
+                      setLegPickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left"
+                    aria-expanded={linePickerOpen}
+                  >
+                    {selectedLineIds.size > 0 ? `${selectedLineIds.size} selected` : 'Select lines…'}
+                  </button>
+                  {linePickerOpen && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={lineQuery}
+                          onChange={(e) => setLineQuery(e.target.value)}
+                          placeholder="Search lines…"
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-72 overflow-auto p-1">
+                        {filteredLines.map((l) => {
+                          const checked = selectedLineIds.has(l.id)
+                          return (
+                            <button
+                              key={l.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedLineIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(l.id)) next.delete(l.id)
+                                  else next.add(l.id)
+                                  return next
+                                })
+                              }
+                              className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                checked ? 'bg-amber-50 dark:bg-amber-900/20' : ''
+                              }`}
+                            >
+                              {checked ? '✓ ' : ''}{l.name}
+                            </button>
+                          )
+                        })}
+                        {filteredLines.length === 0 && (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setLinePickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedLineIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedLineIds].map((id) => {
+                      const line = linesTree.find((l) => l.id === id)
+                      if (!line) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedLineIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">{line.name}</span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Legs picker */}
+              <div className="block">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Legs (optional)
+                </div>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLegPickerOpen((v) => !v)
+                      setLegQuery('')
+                      setMachineFamilyPickerOpen(false)
+                      setModulePickerOpen(false)
+                      setStationPickerOpen(false)
+                      setLinePickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left"
+                    aria-expanded={legPickerOpen}
+                    disabled={linesTree.length === 0}
+                  >
+                    {selectedLineLegIds.size > 0 ? `${selectedLineLegIds.size} selected` : 'Select legs…'}
+                  </button>
+                  {legPickerOpen && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={legQuery}
+                          onChange={(e) => setLegQuery(e.target.value)}
+                          placeholder={selectedLineIds.size > 0 ? 'Search legs…' : 'Search legs… (or pick lines first)'}
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-72 overflow-auto p-1">
+                        {filteredLegs.map((leg) => {
+                          const checked = selectedLineLegIds.has(leg.id)
+                          return (
+                            <button
+                              key={leg.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedLineLegIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(leg.id)) next.delete(leg.id)
+                                  else next.add(leg.id)
+                                  return next
+                                })
+                              }
+                              className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                checked ? 'bg-violet-50 dark:bg-violet-900/20' : ''
+                              }`}
+                            >
+                              {checked ? '✓ ' : ''}{leg._lineName} — {leg.name}
+                            </button>
+                          )
+                        })}
+                        {filteredLegs.length === 0 && (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setLegPickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedLineLegIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedLineLegIds].map((id) => {
+                      const match = availableLegs.find((l) => l.id === id)
+                      if (!match) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedLineLegIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-violet-50 dark:bg-violet-900/20 border border-violet-300 dark:border-violet-800 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">
+                            {match._lineName} — {match.name}
+                          </span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Training modules picker */}
+              <div className="block">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Training modules
+                </div>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModulePickerOpen((v) => !v)
+                      setModuleQuery('')
+                      setMachineFamilyPickerOpen(false)
+                      setStationPickerOpen(false)
+                      setLinePickerOpen(false)
+                      setLegPickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left"
+                    aria-expanded={modulePickerOpen}
+                  >
+                    {selectedModuleIds.size > 0
+                      ? `${selectedModuleIds.size} selected`
+                      : 'Select modules…'}
+                  </button>
+                  {modulePickerOpen && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={moduleQuery}
+                          onChange={(e) => setModuleQuery(e.target.value)}
+                          placeholder="Search modules…"
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-72 overflow-auto p-1">
+                        {filteredModules.map((m) => {
+                          const checked = selectedModuleIds.has(m.id)
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedModuleIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(m.id)) next.delete(m.id)
+                                  else next.add(m.id)
+                                  return next
+                                })
+                              }
+                              className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                checked ? 'bg-emerald-50 dark:bg-emerald-900/20' : ''
+                              }`}
+                            >
+                              {checked ? '✓ ' : ''}{m.name}
+                            </button>
+                          )
+                        })}
+                        {filteredModules.length === 0 && (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setModulePickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedModuleIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedModuleIds].map((id) => {
+                      const mod = trainingModules.find((m) => m.id === id)
+                      if (!mod) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedModuleIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-300 dark:border-emerald-800 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">{mod.name}</span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Stations / zones (HMI code labels only when machine type uses them) */}
+              <div className="block">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  {stationsUsesHmi ? 'Station codes' : 'Stations / zones'}
+                </div>
+                <div className="mt-1 relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStationPickerOpen((v) => !v)
+                      setStationQuery('')
+                      setMachineFamilyPickerOpen(false)
+                      setModulePickerOpen(false)
+                      setLinePickerOpen(false)
+                      setLegPickerOpen(false)
+                    }}
+                    className="w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-base touch-target text-left disabled:opacity-60"
+                    aria-expanded={stationPickerOpen}
+                    disabled={selectedMachineFamilyIds.size !== 1}
+                  >
+                    {selectedMachineFamilyIds.size === 0
+                      ? 'Select machine type first…'
+                      : selectedMachineFamilyIds.size > 1
+                        ? `Pick 1 machine type to use ${stationsUsesHmi ? 'station codes' : 'zones'}…`
+                      : selectedStationIds.size > 0
+                        ? `${selectedStationIds.size} selected`
+                        : stationsUsesHmi
+                          ? 'Select station codes…'
+                          : 'Select stations / zones…'}
+                  </button>
+                  {stationPickerOpen && selectedMachineFamilyIds.size === 1 && (
+                    <div className="absolute z-30 mt-2 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                      <div className="p-2 border-b border-gray-200 dark:border-gray-800">
+                        <input
+                          value={stationQuery}
+                          onChange={(e) => setStationQuery(e.target.value)}
+                          placeholder={
+                            stationsUsesHmi
+                              ? 'Search codes or names… (e.g. 2400, sealing)'
+                              : 'Search zone names…'
+                          }
+                          className="w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-base touch-target"
+                          inputMode="search"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-[70vh] overflow-auto p-2 space-y-2">
+                        {Object.keys(filteredStationsBySection).length === 0 ? (
+                          <div className="px-3 py-3 text-sm text-gray-600 dark:text-gray-400">
+                            No matches.
+                          </div>
+                        ) : (
+                          Object.entries(filteredStationsBySection).map(([section, stations]) => (
+                            <div key={section} className="rounded-lg border border-gray-200 dark:border-gray-800 p-2">
+                              <div className="text-xs font-semibold text-gray-800 dark:text-gray-200 mb-1">
+                                {section}
+                              </div>
+                              <div className="space-y-1">
+                                {(stations as MachineFamilyStation[]).map((s: MachineFamilyStation) => {
+                                  const checked = selectedStationIds.has(s.id)
+                                  return (
+                                    <button
+                                      key={s.id}
+                                      type="button"
+                                      onClick={() =>
+                                        setSelectedStationIds((prev) => {
+                                          const next = new Set(prev)
+                                          if (next.has(s.id)) next.delete(s.id)
+                                          else next.add(s.id)
+                                          return next
+                                        })
+                                      }
+                                      className={`w-full px-3 py-3 rounded-lg text-left text-base touch-target hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                                        checked ? 'bg-blue-50 dark:bg-blue-900/20' : ''
+                                      }`}
+                                    >
+                                      {checked ? '✓ ' : ''}
+                                      {stationsUsesHmi ? `${s.station_code} ${s.name}` : s.name}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      <div className="p-2 border-t border-gray-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setStationPickerOpen(false)}
+                          className="w-full px-3 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-base touch-target"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {selectedStationIds.size > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {[...selectedStationIds].map((id) => {
+                      const st = stationListFlat.find((s) => s.id === id)
+                      if (!st) return null
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedStationIds((prev) => {
+                              const next = new Set(prev)
+                              next.delete(id)
+                              return next
+                            })
+                          }
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-sm touch-target"
+                        >
+                          <span className="text-gray-900 dark:text-gray-100">
+                            {stationsUsesHmi ? `${st.station_code} ${st.name}` : st.name}
+                          </span>
+                          <span className="text-gray-600 dark:text-gray-400">×</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <button
+                type="button"
+                onClick={() => void saveAttachments()}
+                disabled={attachmentsSaving || attachmentsLoading || isOffline || !routingDirty}
+                className="w-full px-4 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-base font-semibold touch-target"
+              >
+                {attachmentsSaving
+                  ? 'Saving…'
+                  : attachmentsSaveStatus === 'saved'
+                  ? 'Saved'
+                  : attachmentsSaveStatus === 'error'
+                  ? 'Save failed — try again'
+                  : 'Save changes'}
+              </button>
+              <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                Choose routing when you’re ready to publish so operators can find it in “Line specific search”.
+              </p>
+            </div>
+
+            {isOffline ? (
+              <div className="mt-2 text-xs text-yellow-700 dark:text-yellow-300">
+                Offline: routing changes require internet to save.
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* In routing mode we hide the step editor below */}
+      {tab === 'routing' ? null : (
+        <>
+          {/* Step chips: wrap to next line when no space */}
+          <div className="px-2 py-1.5 safe-left safe-right">
+        <div className="flex flex-wrap gap-2 items-center">
+          <DndContext
+            sensors={dndSensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleReorderDragEnd}
+          >
+            <SortableContext
+              items={(reorderOrderIds ?? steps.map((s) => s.id)) as string[]}
+              strategy={horizontalListSortingStrategy}
+            >
+              {orderedStepsForChips().map((step, i) => (
+                <SortableStepChip
+                  key={step.id}
+                  id={step.id}
+                  label={`Step ${step.idx + 1}`}
+                  active={currentStepId === step.id}
+                  reorderMode={reorderMode}
+                  disabled={!canEdit || steps.length <= 1}
+                  onClick={() => {
+                    setCurrentStepId(step.id)
+                  }}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
+          {canEdit && (
+            <>
+              <button
+                type="button"
+                onClick={handleAddStep}
+                className="px-3 py-1.5 rounded-lg bg-gray-200 dark:bg-gray-700 touch-target whitespace-nowrap text-sm"
+                disabled={reorderMode}
+                aria-disabled={reorderMode}
+                aria-label="Add step"
+              >
+                <span className="md:hidden">Add</span>
+                <span className="hidden md:inline">+ Add Step</span>
+              </button>
+              {steps.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!reorderMode) {
+                      setReorderOrderIds(steps.map((s) => s.id))
+                      setReorderMode(true)
+                    } else {
+                      void finishReorderMode(true)
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-lg touch-target whitespace-nowrap text-sm ${
+                    reorderMode
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-200 dark:bg-gray-700'
+                  }`}
+                  aria-label={reorderMode ? 'Done moving steps' : 'Move steps'}
+                >
+                  {reorderMode ? 'Done' : 'Move'}
+                </button>
+              )}
+              {steps.length > 1 && currentStepId && (
+                <button
+                  type="button"
+                  onClick={() => handleDeleteStep(currentStepId)}
+                  className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white touch-target"
+                  aria-label="Delete current step"
+                  disabled={reorderMode}
+                  aria-disabled={reorderMode}
+                >
+                  🗑️
+                </button>
+              )}
+
+            </>
+          )}
+        </div>
+      </div>
+
+      {!canEdit && (
+        <div className="px-2 py-2 safe-left safe-right border-b border-gray-100 dark:border-gray-800/80">
+          <SopAuthorSignatureFetch sopId={sopId} />
+        </div>
+      )}
+
+      {/* Main editor: step badge + description row, then video + timeline */}
+      {currentStep && (
+        <div className="p-2 md:p-3 space-y-1 md:space-y-2">
+          <div className="flex items-start gap-3">
+            <div
+              className="flex min-h-9 shrink-0 items-center justify-center self-start rounded bg-blue-600 px-3 py-1.5"
+              aria-hidden
+            >
+              <span className="text-base font-semibold tabular-nums leading-snug text-white">
+                Step {currentStepOrdinal}
+              </span>
+            </div>
+            {canEdit ? (
+              <textarea
+                id="step-description"
+                value={currentStep.instructions ?? ''}
+                onChange={(e) => handleStepInstructionsChange(currentStep.id, e.target.value)}
+                onBlur={() => handleStepInstructionsBlur(currentStep.id)}
+                placeholder="Describe what to do in this step…"
+                rows={2}
+                className="min-h-[52px] md:min-h-[64px] w-full min-w-0 flex-1 resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-base font-bold leading-snug text-gray-900 placeholder-gray-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 touch-target"
+                autoComplete="off"
+              />
+            ) : (
+              <p className="min-w-0 flex-1 whitespace-pre-wrap text-base font-bold leading-snug text-gray-900 dark:text-gray-100">
+                {currentStep.instructions?.trim()
+                  ? currentStep.instructions
+                  : 'No description for this step.'}
+              </p>
+            )}
+          </div>
+
+          {/* Video or image + timeline (timeline only for video) */}
+          {!currentStep.video_path && !videoUrl && !currentStep.image_path && !imageUrl ? (
+            canEdit ? (
+              <div className="-mx-3 md:mx-0">
+                <VideoCapture
+                  stepId={currentStep.id}
+                  sopId={sopId}
+                  onVideoCaptured={handleVideoCaptured}
+                  onImageCaptured={handleImageCaptured}
+                  existingVideoPath={currentStep.video_path}
+                  existingImagePath={currentStep.image_path}
+                />
+              </div>
+            ) : (
+              <div className="w-full aspect-video bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center text-gray-500">
+                No media for this step
+              </div>
+            )
+          ) : (
+            <div className="space-y-1">
+              <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
+                <StepPlayer
+                  // Pass both; StepPlayer prefers image when imageUrl is present.
+                  videoUrl={videoUrl}
+                  imageUrl={imageUrl}
+                  annotations={currentAnnotations}
+                  currentTime={currentTime}
+                  startTime={startTime}
+                  endTime={endTime}
+                  onAnnotationUpdate={handleAnnotationUpdate}
+                  onAnnotationDelete={handleAnnotationDelete}
+                  selectedAnnotationId={editingAnnotationId}
+                  onSelectAnnotation={handleSelectAnnotation}
+                  onTimeUpdate={setCurrentTime}
+                  onDurationUpdate={setVideoDuration}
+                  showControls={false}
+                  seekTime={currentTime}
+                  filterAnnotationsByTime={!canEdit}
+                  playbackRate={isVideoPreviewSpeedEnabled ? playbackRate : 1}
+                />
+              </div>
+              {hasEditorMedia && canEdit && (
+                  <div className="w-[calc(100%+1rem)] max-w-[100vw] -mx-2 px-2 md:w-full md:mx-0 md:max-w-none md:px-0 space-y-1.5">
+                    <div className="flex w-full items-stretch justify-between gap-1.5 sm:gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleAddAnnotation('arrow')}
+                        className={`flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors ${
+                          arrowToolActive
+                            ? 'bg-emerald-600 text-white ring-2 ring-emerald-400 ring-offset-2'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                        }`}
+                        title="Add arrow"
+                        aria-label="Add arrow annotation"
+                      >
+                        <Image
+                          src={ARROW_ICON_SRC}
+                          alt=""
+                          width={48}
+                          height={48}
+                          className="h-12 w-12 shrink-0 object-contain opacity-90 dark:opacity-100"
+                          aria-hidden
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAddAnnotation('label')}
+                        className={`flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors ${
+                          labelToolActive
+                            ? 'bg-sky-600 text-white ring-2 ring-sky-400 ring-offset-2'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                        }`}
+                        title="Add label"
+                        aria-label="Add label annotation"
+                      >
+                        <Image
+                          src={LABEL_ICON_SRC}
+                          alt=""
+                          width={48}
+                          height={48}
+                          className="h-12 w-12 shrink-0 object-contain opacity-90 dark:opacity-100"
+                          aria-hidden
+                        />
+                      </button>
+                      {isVideoCutEnabled && !currentStep.image_path && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (cutMode) {
+                                setCutMode(false)
+                                setCutError(null)
+                              } else {
+                                const dur = videoDuration || currentStep.duration_ms || 0
+                                setSelectedAnnotationId(null)
+                                setSpeedMode(false)
+                                setSpeedError(null)
+                                setCutMode(true)
+                                setCutError(null)
+                                setStartTime(currentTime)
+                                setEndTime(Math.min(currentTime + 2000, dur))
+                                setTimelineDragMode('seek')
+                              }
+                            }}
+                            className={`flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors ${
+                              cutMode
+                                ? 'bg-amber-500 text-white ring-2 ring-amber-400 ring-offset-2'
+                                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                            }`}
+                            title={cutMode ? 'Exit cut mode' : 'Set range to cut from video'}
+                            aria-label={cutMode ? 'Exit cut mode' : 'Cut video'}
+                          >
+                            <Image
+                              src={CUT_ICON_SRC}
+                              alt=""
+                              width={48}
+                              height={48}
+                              className="h-12 w-12 shrink-0 object-contain opacity-90 dark:opacity-100"
+                              aria-hidden
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (speedMode) {
+                                setSpeedMode(false)
+                                setSpeedError(null)
+                              } else {
+                                const dur = videoDuration || currentStep.duration_ms || 0
+                                setSelectedAnnotationId(null)
+                                setCutMode(false)
+                                setCutError(null)
+                                setSpeedMode(true)
+                                setSpeedError(null)
+                                setStartTime(currentTime)
+                                setEndTime(Math.min(currentTime + 2000, dur))
+                                setTimelineDragMode('seek')
+                              }
+                            }}
+                            className={`flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target p-1 transition-colors ${
+                              speedMode
+                                ? 'bg-violet-500 text-white ring-2 ring-violet-400 ring-offset-2'
+                                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                            }`}
+                            title={speedMode ? 'Exit speed mode' : 'Speed up a segment'}
+                            aria-label={speedMode ? 'Exit speed mode' : 'Speed up segment'}
+                          >
+                            <Image
+                              src={SPEED_ICON_SRC}
+                              alt=""
+                              width={48}
+                              height={48}
+                              className="h-12 w-12 shrink-0 object-contain opacity-90 dark:opacity-100"
+                              aria-hidden
+                            />
+                          </button>
+                        </>
+                      )}
+                      {selectedAnnotationId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleAnnotationDelete(selectedAnnotationId)
+                            setSelectedAnnotationId(null)
+                          }}
+                          className="flex min-h-[52px] min-w-0 flex-1 basis-0 items-center justify-center rounded-xl touch-target bg-red-600 p-1 text-xl font-semibold text-white hover:bg-red-700"
+                          title="Delete selected annotation"
+                          aria-label="Delete selected annotation"
+                        >
+                          🗑️
+                        </button>
+                      )}
+                    </div>
+                    {isVideoCutEnabled && !currentStep.image_path && cutMode && (
+                      <p className="text-center text-sm text-amber-700 dark:text-amber-300 font-medium px-0.5">
+                        Select range to remove, then press Cut
+                      </p>
+                    )}
+                    {isVideoCutEnabled && !currentStep.image_path && speedMode && (
+                      <p className="text-center text-sm text-violet-700 dark:text-violet-300 font-medium px-0.5">
+                        Select range, pick factor, Apply
+                      </p>
+                    )}
+                  </div>
+                )}
+              {isVideoPreviewSpeedEnabled &&
+                !currentStep.image_path &&
+                (videoUrl || currentStep.video_path) && (
+                  <div className="flex flex-wrap items-center gap-2 py-1 px-0.5">
+                    <span className="text-xs text-gray-600 dark:text-gray-400 shrink-0">Preview speed</span>
+                    <div className="flex flex-wrap gap-1">
+                      {VIDEO_PREVIEW_SPEEDS.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setPlaybackRate(s)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold touch-target min-w-[40px] ${
+                            playbackRate === s
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
+                          }`}
+                        >
+                          {s === 1 ? '1×' : `${s}×`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              {!currentStep.image_path && (
+                <>
+                {isVideoCutEnabled && (
+                <>
+                <TimeBar
+                  duration={videoDuration || currentStep.duration_ms || 0}
+                  currentTime={currentTime}
+                  startTime={startTime}
+                  endTime={endTime}
+                  onStartTimeChange={(time) => {
+                    if (isVideoCutEnabled && (cutMode || speedMode)) {
+                      setStartTime(time)
+                    } else if (selectedAnnotationId) {
+                      handleAnnotationUpdate(selectedAnnotationId, { t_start_ms: time })
+                    } else {
+                      setStartTime(time)
+                    }
+                  }}
+                  onEndTimeChange={(time) => {
+                    if (isVideoCutEnabled && (cutMode || speedMode)) {
+                      setEndTime(time)
+                    } else if (selectedAnnotationId) {
+                      handleAnnotationUpdate(selectedAnnotationId, { t_end_ms: time })
+                    } else {
+                      setEndTime(time)
+                    }
+                  }}
+                  onSeek={setCurrentTime}
+                  dragMode={timelineDragMode}
+                  onDragModeChange={setTimelineDragMode}
+                  disabled={!canEdit || ((!(isVideoCutEnabled && (cutMode || speedMode))) && !selectedAnnotationId)}
+                  selectionHint={
+                    isVideoCutEnabled && cutMode
+                      ? 'Range to remove from video'
+                      : isVideoCutEnabled && speedMode
+                        ? 'Range to speed up (encoded)'
+                        : selectedAnnotationId
+                        ? (() => {
+                            const ann = (currentAnnotations || []).find((a) => a.id === selectedAnnotationId)
+                            return ann ? `Editing selected ${ann.kind}` : undefined
+                          })()
+                        : undefined
+                  }
+                />
+                {isVideoCutEnabled && cutMode && (
+                  <div className="flex flex-wrap items-center gap-2 py-1.5">
+                    <button
+                      type="button"
+                      onClick={handleCut}
+                      disabled={cutProgress !== null || speedProgress !== null || startTime >= endTime}
+                      className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold touch-target"
+                    >
+                      {cutProgress !== null ? `Cutting… ${cutProgress}%` : 'Cut'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setCutMode(false); setCutError(null) }}
+                      disabled={cutProgress !== null || speedProgress !== null}
+                      className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-medium touch-target disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    {cutError && (
+                      <span className="text-sm text-red-600 dark:text-red-400">{cutError}</span>
+                    )}
+                  </div>
+                )}
+                {isVideoCutEnabled && speedMode && (
+                  <div className="flex flex-col gap-2 py-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-gray-600 dark:text-gray-400 shrink-0">Encode ×</span>
+                      <div className="flex flex-wrap gap-1">
+                        {SEGMENT_SPEED_FACTORS.map((f) => (
+                          <button
+                            key={f}
+                            type="button"
+                            onClick={() => setSpeedFactor(f)}
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold touch-target min-w-[40px] ${
+                              speedFactor === f
+                                ? 'bg-violet-600 text-white'
+                                : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
+                            }`}
+                          >
+                            {f === 0.5 ? '0.5×' : `${f}×`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleSpeedSegment()}
+                        disabled={speedProgress !== null || cutProgress !== null || startTime >= endTime}
+                        className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold touch-target"
+                      >
+                        {speedProgress !== null ? `Processing… ${speedProgress}%` : 'Apply speed'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setSpeedMode(false); setSpeedError(null) }}
+                        disabled={speedProgress !== null || cutProgress !== null}
+                        className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-medium touch-target disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      {speedError && (
+                        <span className="text-sm text-red-600 dark:text-red-400">{speedError}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+                </>
+                )}
+              {currentStepId && canEdit && (() => {
+                const status = stepUploadStatus[currentStepId]
+                const progress = stepUploadProgress[currentStepId] ?? 0
+                const result = stepUploadResult[currentStepId]
+                if (status === 'compressing' || status === 'uploading') {
+                  return (
+                    <div className="flex items-center gap-2 py-1.5 px-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-blue-800 dark:text-blue-200">
+                      <span>{status === 'compressing' ? 'Compressing…' : 'Uploading…'}</span>
+                      {progress > 0 && <span>{progress}%</span>}
+                    </div>
+                  )
+                }
+                if (status === 'failed') {
+                  return (
+                    <div className="flex items-center gap-2 py-1.5 px-2 bg-red-50 dark:bg-red-900/20 rounded-lg text-sm text-red-800 dark:text-red-200">
+                      <span>Upload failed.</span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!currentStepId) return
+                          const blob = await getVideoBlob(currentStepId)
+                          const step = steps.find((s) => s.id === currentStepId)
+                          if (blob && step) {
+                            await processAndUploadVideo(blob, currentStepId, step.duration_ms ?? 0)
+                          }
+                        }}
+                        className="font-medium underline touch-target"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )
+                }
+                if (result === 'compressed' || result === 'original') {
+                  const sizes = stepUploadSizes[currentStepId]
+                  return (
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-1.5 px-2 bg-green-50 dark:bg-green-900/20 rounded-lg text-sm text-green-800 dark:text-green-200">
+                      <span>
+                        {result === 'compressed'
+                          ? 'Uploaded (compressed)'
+                          : 'Uploaded (original — compression skipped)'}
+                      </span>
+                      {sizes && (
+                        <span className="text-green-700 dark:text-green-300">
+                          {formatBytes(sizes.before)} → {formatBytes(sizes.after)}
+                          {result === 'compressed' && sizes.after < sizes.before && (
+                            <span className="ml-0.5">
+                              ({Math.round((1 - sizes.after / sizes.before) * 100)}% smaller)
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  )
+                }
+                return null
+              })()}
+              </> )}
+            </div>
+          )}
+
+          {hasEditorMedia && canEdit && (
+              <AnnotToolbar
+                hasSelection={!!editingAnnotationId}
+                selectedLabelText={
+                  editingAnnotationId
+                    ? (() => {
+                        const ann = currentAnnotations.find(
+                          (a) => a.id === editingAnnotationId
+                        )
+                        return ann?.kind === 'label' ? (ann.text ?? '') : undefined
+                      })()
+                    : undefined
+                }
+                onLabelTextChange={
+                  editingAnnotationId
+                    ? (text) =>
+                        handleAnnotationUpdate(editingAnnotationId, { text })
+                    : undefined
+                }
+                selectedAnnotationKind={
+                  editingAnnotationId
+                    ? currentAnnotations.find((a) => a.id === editingAnnotationId)?.kind
+                    : undefined
+                }
+                selectedAnnotationStyle={
+                  editingAnnotationId
+                    ? currentAnnotations.find((a) => a.id === editingAnnotationId)?.style
+                    : undefined
+                }
+                onStyleChange={
+                  editingAnnotationId
+                    ? (style) => {
+                        const ann = currentAnnotations.find(
+                          (a) => a.id === editingAnnotationId
+                        )
+                        if (ann)
+                          handleAnnotationUpdate(editingAnnotationId, {
+                            style: { ...ann.style, ...style },
+                          })
+                      }
+                    : undefined
+                }
+              />
+            )}
+        </div>
+      )}
+        </>
+      )}
+    </div>
+  )
+}

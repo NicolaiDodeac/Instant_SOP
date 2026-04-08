@@ -9,6 +9,13 @@ import { useSupabaseClient } from '@/lib/supabase/client'
 
 type AuthMode = 'signin' | 'signup'
 
+function safeNextPath(raw: string | null): string {
+  if (!raw) return '/dashboard'
+  const t = raw.trim()
+  if (!t.startsWith('/') || t.startsWith('//')) return '/dashboard'
+  return t
+}
+
 function LoginContent() {
   const searchParams = useSearchParams()
   const supabase = useSupabaseClient()
@@ -26,6 +33,8 @@ function LoginContent() {
   const passwordInputRef = useRef<HTMLInputElement>(null)
   const confirmPasswordInputRef = useRef<HTMLInputElement>(null)
   const focusAfterModeChange = useRef<'password' | 'confirm' | null>(null)
+
+  const afterLoginHref = safeNextPath(searchParams.get('next'))
 
   useEffect(() => {
     const err = searchParams.get('error')
@@ -69,7 +78,7 @@ function LoginContent() {
       }
 
       // Server sets auth cookies; hard redirect so middleware sees them
-      window.location.href = '/dashboard'
+      window.location.href = afterLoginHref
     } catch (err) {
       if (process.env.NODE_ENV === 'development') {
         console.error('Sign in error:', err)
@@ -95,9 +104,11 @@ function LoginContent() {
           : typeof window !== 'undefined'
             ? window.location.origin
             : ''
+      const callbackUrl = new URL(`${baseUrl}/auth/callback`)
+      callbackUrl.searchParams.set('next', afterLoginHref)
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: `${baseUrl}/auth/callback` },
+        options: { redirectTo: callbackUrl.toString() },
       })
       if (oauthError) {
         setError(oauthError.message)

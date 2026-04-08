@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
@@ -34,20 +34,26 @@ function SearchIcon({ className }: { className?: string }) {
   )
 }
 
+const PAGE_SIZE = 30
+
 export default function DashboardClient() {
   const [sops, setSops] = useState<SOP[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const [totalSops, setTotalSops] = useState<number | null>(null)
   const [isEditor, setIsEditor] = useState<boolean | null>(null)
   const [isSuperUser, setIsSuperUser] = useState(false)
   const [sopMeta, setSopMeta] = useState<Record<string, SopAuthorMeta>>({})
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [trainingModules, setTrainingModules] = useState<TrainingModule[]>([])
   const [trainingModuleId, setTrainingModuleId] = useState('')
   const [modulePickerOpen, setModulePickerOpen] = useState(false)
   const [moduleQuery, setModuleQuery] = useState('')
-  /** null = no module filter; Set = SOP ids linked to selected module */
-  const [moduleSopIds, setModuleSopIds] = useState<Set<string> | null>(null)
-  const [moduleFilterLoading, setModuleFilterLoading] = useState(false)
+  const sopMetaRef = useRef<Record<string, SopAuthorMeta>>({})
+  const listFetchGen = useRef(0)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
   const router = useRouter()
   const supabase = useSupabaseClient()
 
@@ -57,9 +63,17 @@ export default function DashboardClient() {
   )
 
   useEffect(() => {
-    loadSOPs()
     loadMe()
   }, [])
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    return () => clearTimeout(t)
+  }, [search])
+
+  useEffect(() => {
+    sopMetaRef.current = sopMeta
+  }, [sopMeta])
 
   useEffect(() => {
     void (async () => {
@@ -80,35 +94,6 @@ export default function DashboardClient() {
     })()
   }, [supabase])
 
-  useEffect(() => {
-    if (!trainingModuleId) {
-      setModuleSopIds(null)
-      setModuleFilterLoading(false)
-      return
-    }
-    let cancelled = false
-    setModuleFilterLoading(true)
-    void (async () => {
-      const { data, error } = await supabase
-        .from('sop_training_modules')
-        .select('sop_id')
-        .eq('training_module_id', trainingModuleId)
-      if (cancelled) return
-      if (error) {
-        setModuleSopIds(new Set())
-        setModuleFilterLoading(false)
-        return
-      }
-      setModuleSopIds(
-        new Set((data ?? []).map((r: { sop_id: string }) => String(r.sop_id)))
-      )
-      setModuleFilterLoading(false)
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [trainingModuleId, supabase])
-
   const selectedTrainingModule = useMemo(
     () => trainingModules.find((m) => m.id === trainingModuleId) ?? null,
     [trainingModules, trainingModuleId]
@@ -125,16 +110,27 @@ export default function DashboardClient() {
       setSopMeta({})
       return
     }
+    const missing = [...new Set(publishedSopIds)].filter((id) => !sopMetaRef.current[id])
+    if (missing.length === 0) return
+
     let cancelled = false
-    const ids = publishedSopIds.join(',')
     void (async () => {
       try {
-        const res = await fetch(`/api/sop-author?sopIds=${encodeURIComponent(ids)}`)
-        if (!res.ok) return
-        const data = (await res.json()) as { authors?: Record<string, SopAuthorMeta> }
-        if (!cancelled) setSopMeta(data.authors ?? {})
+        for (let i = 0; i < missing.length; i += 40) {
+          const chunk = missing.slice(i, i + 40)
+          const res = await fetch(
+            `/api/sop-author?sopIds=${encodeURIComponent(chunk.join(','))}`
+          )
+          if (!res.ok) continue
+          const data = (await res.json()) as { authors?: Record<string, SopAuthorMeta> }
+          if (cancelled) return
+          const authors = data.authors ?? {}
+          if (Object.keys(authors).length > 0) {
+            setSopMeta((prev) => ({ ...prev, ...authors }))
+          }
+        }
       } catch {
-        if (!cancelled) setSopMeta({})
+        // ignore
       }
     })()
     return () => {
@@ -154,25 +150,101 @@ export default function DashboardClient() {
     }
   }
 
-  async function loadSOPs() {
+  const fetchPublishedPage = useCallback(
+    async (offset: number) => {
+      const params = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        offset: String(offset),
+      })
+      if (debouncedSearch) params.set('q', debouncedSearch)
+      if (trainingModuleId) params.set('trainingModuleId', trainingModuleId)
+
+      const res = await fetch(`/api/dashboard/published-sops?${params}`)
+      if (!res.ok) {
+        throw new Error('Failed to load SOPs')
+      }
+      return (await res.json()) as {
+        items: SOP[]
+        hasMore: boolean
+        totalSops?: number
+      }
+    },
+    [debouncedSearch, trainingModuleId]
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    const gen = ++listFetchGen.current
+
+    void (async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      if (!user) {
+        setLoading(false)
+        setSops([])
+        setHasMore(false)
+        return
+      }
+
+      setLoading(true)
+      setHasMore(true)
+      setSops([])
+      try {
+        const body = await fetchPublishedPage(0)
+        if (cancelled || listFetchGen.current !== gen) return
+        setSops(body.items)
+        setHasMore(body.hasMore)
+        if (body.totalSops != null) setTotalSops(body.totalSops)
+      } catch {
+        if (!cancelled && listFetchGen.current === gen) {
+          setSops([])
+          setHasMore(false)
+        }
+      } finally {
+        if (!cancelled && listFetchGen.current === gen) setLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [debouncedSearch, trainingModuleId, supabase, fetchPublishedPage])
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loading || loadingMore) return
     const {
       data: { user },
     } = await supabase.auth.getUser()
-    if (!user) {
-      setLoading(false)
-      return
-    }
+    if (!user) return
 
-    const { data, error } = await supabase
-      .from('sops')
-      .select('*')
-      .order('updated_at', { ascending: false, nullsFirst: false })
-
-    if (!error && data) {
-      setSops(data as SOP[])
+    const genAtStart = listFetchGen.current
+    setLoadingMore(true)
+    try {
+      const body = await fetchPublishedPage(sops.length)
+      if (listFetchGen.current !== genAtStart) return
+      setSops((prev) => [...prev, ...body.items])
+      setHasMore(body.hasMore)
+    } catch {
+      // keep existing list
+    } finally {
+      if (listFetchGen.current === genAtStart) setLoadingMore(false)
     }
-    setLoading(false)
-  }
+  }, [fetchPublishedPage, hasMore, loading, loadingMore, sops.length, supabase])
+
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el || loading || !hasMore) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) void loadMore()
+      },
+      { root: null, rootMargin: '240px', threshold: 0 }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasMore, loadMore, loading, sops.length])
 
   async function handleSignOut() {
     await supabase.auth.signOut()
@@ -339,43 +411,22 @@ export default function DashboardClient() {
           </div>
           {loading || isEditor === null ? (
             <div className="text-center py-8">Loading...</div>
-          ) : (() => {
-            const q = search.trim().toLowerCase()
-            const published = sops.filter((s) => s.published && s.share_slug)
-            const afterModule =
-              trainingModuleId && moduleSopIds != null
-                ? published.filter((s) => moduleSopIds.has(s.id))
-                : published
-            const displaySops = afterModule.filter((s) => {
-              if (!q) return true
-              const num = s.sop_number != null ? String(s.sop_number) : ''
-              return (
-                (s.title ?? '').toLowerCase().includes(q) ||
-                num.includes(q)
-              )
-            })
-            const totalCount = sops.length
-            const publishedCount = published.length
-            if (trainingModuleId && moduleFilterLoading) {
-              return (
-                <div className="text-center py-8 text-gray-500">Loading SOPs…</div>
-              )
-            }
-            return displaySops.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                {totalCount === 0
-                  ? 'No SOPs yet. Create one from Create / Edit SOPs.'
-                  : publishedCount === 0
-                    ? 'No published SOPs to view yet. Publish one from the editor.'
-                    : trainingModuleId && afterModule.length === 0
-                      ? 'No published SOPs tagged with this module yet.'
-                      : q && afterModule.length > 0
-                        ? 'No SOPs match your search.'
-                        : 'No published SOPs to view yet. Publish one from the editor.'}
-              </div>
-            ) : (
+          ) : sops.length === 0 && !hasMore ? (
+            <div className="text-center py-8 text-gray-500">
+              {totalSops === 0
+                ? 'No SOPs yet. Create one from Create / Edit SOPs.'
+                : debouncedSearch
+                  ? 'No SOPs match your search.'
+                  : trainingModuleId
+                    ? 'No published SOPs tagged with this module yet.'
+                    : totalSops != null && totalSops > 0
+                      ? 'No published SOPs to view yet. Publish one from the editor.'
+                      : 'No published SOPs to view yet. Publish one from the editor.'}
+            </div>
+          ) : (
+            <>
               <div className="space-y-1.5">
-                {displaySops.map((sop) => (
+                {sops.map((sop) => (
                   <div
                     key={sop.id}
                     onClick={() => router.push(`/sop/${sop.share_slug}`)}
@@ -418,8 +469,21 @@ export default function DashboardClient() {
                   </div>
                 ))}
               </div>
-            )
-          })()}
+              {hasMore ? (
+                <div
+                  ref={sentinelRef}
+                  className="h-8 flex items-center justify-center py-4 text-sm text-gray-500 dark:text-gray-400"
+                  aria-hidden
+                >
+                  {loadingMore ? 'Loading more…' : ''}
+                </div>
+              ) : sops.length > 0 ? (
+                <p className="text-center py-3 text-xs text-gray-500 dark:text-gray-400">
+                  End of list
+                </p>
+              ) : null}
+            </>
+          )}
         </div>
       </div>
     </div>

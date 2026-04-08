@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
@@ -12,12 +12,18 @@ import type { DraftSOP } from '@/lib/types'
 /** DB SOP ids are UUIDs; local-only drafts may use nanoid and must stay visible to non–super-users. */
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+const PAGE_SIZE = 30
+
 export default function EditorListPage() {
   const router = useRouter()
   const supabase = useSupabaseClient()
   const [sops, setSops] = useState<SOP[]>([])
   const [drafts, setDrafts] = useState<DraftSOP[]>([])
   const [loading, setLoading] = useState(true)
+  const [listLoading, setListLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const [ownedSopIds, setOwnedSopIds] = useState<Set<string>>(() => new Set())
   const [isEditor, setIsEditor] = useState<boolean | null>(null)
   const [isSuperUser, setIsSuperUser] = useState(false)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
@@ -26,23 +32,114 @@ export default function EditorListPage() {
   const [createError, setCreateError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const listFetchGen = useRef(0)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     loadMe()
   }, [])
 
   useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    return () => clearTimeout(t)
+  }, [search])
+
+  useEffect(() => {
     if (isEditor) {
-      loadSOPs()
       loadDrafts()
     }
-  }, [isEditor, isSuperUser])
+  }, [isEditor])
+
+  useEffect(() => {
+    if (!isEditor || isSuperUser) return
+    void (async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      if (!user) return
+      const { data } = await supabase.from('sops').select('id').eq('owner', user.id)
+      setOwnedSopIds(new Set((data ?? []).map((r: { id: string }) => r.id)))
+    })()
+  }, [isEditor, isSuperUser, supabase])
+
+  const fetchEditorPage = useCallback(async (offset: number) => {
+    const params = new URLSearchParams({
+      limit: String(PAGE_SIZE),
+      offset: String(offset),
+    })
+    if (debouncedSearch) params.set('q', debouncedSearch)
+    const res = await fetch(`/api/editor/sops?${params}`)
+    if (!res.ok) {
+      throw new Error('Failed to load SOPs')
+    }
+    return (await res.json()) as { items: SOP[]; hasMore: boolean; totalSops?: number }
+  }, [debouncedSearch])
+
+  useEffect(() => {
+    if (!isEditor) return
+
+    let cancelled = false
+    const gen = ++listFetchGen.current
+
+    void (async () => {
+      setListLoading(true)
+      setHasMore(true)
+      setSops([])
+      try {
+        const body = await fetchEditorPage(0)
+        if (cancelled || listFetchGen.current !== gen) return
+        setSops(body.items)
+        setHasMore(body.hasMore)
+      } catch {
+        if (!cancelled && listFetchGen.current === gen) {
+          setSops([])
+          setHasMore(false)
+        }
+      } finally {
+        if (!cancelled && listFetchGen.current === gen) setListLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [isEditor, debouncedSearch, fetchEditorPage])
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || listLoading || loadingMore) return
+    const genAtStart = listFetchGen.current
+    setLoadingMore(true)
+    try {
+      const body = await fetchEditorPage(sops.length)
+      if (listFetchGen.current !== genAtStart) return
+      setSops((prev) => [...prev, ...body.items])
+      setHasMore(body.hasMore)
+    } catch {
+      // keep list
+    } finally {
+      if (listFetchGen.current === genAtStart) setLoadingMore(false)
+    }
+  }, [fetchEditorPage, hasMore, listLoading, loadingMore, sops.length])
+
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el || listLoading || !hasMore || !isEditor) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) void loadMore()
+      },
+      { root: null, rootMargin: '240px', threshold: 0 }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hasMore, isEditor, listLoading, loadMore, sops.length])
 
   const visibleDrafts = useMemo(() => {
     if (isSuperUser) return drafts
-    const ownedIds = new Set(sops.map((s) => s.id))
-    return drafts.filter((d) => ownedIds.has(d.id) || !UUID_REGEX.test(d.id))
-  }, [drafts, sops, isSuperUser])
+    return drafts.filter((d) => ownedSopIds.has(d.id) || !UUID_REGEX.test(d.id))
+  }, [drafts, isSuperUser, ownedSopIds])
 
   async function loadMe() {
     try {
@@ -64,28 +161,6 @@ export default function EditorListPage() {
       router.replace('/dashboard')
     } finally {
       setLoading(false)
-    }
-  }
-
-  async function loadSOPs() {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return
-
-    let query = supabase
-      .from('sops')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    if (!isSuperUser) {
-      query = query.eq('owner', user.id)
-    }
-
-    const { data, error } = await query
-
-    if (!error && data) {
-      setSops(data as SOP[])
     }
   }
 
@@ -120,6 +195,7 @@ export default function EditorListPage() {
       setShowCreate(false)
       setNewTitle('')
       setCreateError(null)
+      setOwnedSopIds((prev) => new Set(prev).add(data.id as string))
       // Let the editor start by creating steps; routing is chosen at publish time.
       router.push(`/editor/${data.id}`)
     }
@@ -143,6 +219,11 @@ export default function EditorListPage() {
     }
     await deleteDraft(sop.id)
     setSops((prev) => prev.filter((s) => s.id !== sop.id))
+    setOwnedSopIds((prev) => {
+      const next = new Set(prev)
+      next.delete(sop.id)
+      return next
+    })
   }
 
   if (loading || isEditor === false) {
@@ -261,58 +342,71 @@ export default function EditorListPage() {
               inputMode="search"
             />
           </div>
-          {sops.length === 0 ? (
+          {listLoading ? (
+            <div className="text-center py-8 text-gray-500">Loading SOPs…</div>
+          ) : sops.length === 0 && !hasMore ? (
             <div className="text-center py-8 text-gray-500">
-              No SOPs yet. Create one above.
+              {debouncedSearch ? 'No SOPs match your search.' : 'No SOPs yet. Create one above.'}
             </div>
           ) : (
-            <div className="space-y-2">
-              {sops
-                .filter((s) => {
-                  const q = search.trim().toLowerCase()
-                  if (!q) return true
-                  const num = s.sop_number != null ? String(s.sop_number) : ''
-                  return (s.title ?? '').toLowerCase().includes(q) || num.includes(q)
-                })
-                .map((sop) => {
-                const canDeleteSop = currentUserId === sop.owner || isSuperUser
-                return (
-                  <div
-                    key={sop.id}
-                    onClick={() => router.push(`/editor/${sop.id}`)}
-                    className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer touch-target flex items-center justify-between gap-2"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <h3 className="font-semibold truncate">
-                        {sop.sop_number != null ? `SOP ${sop.sop_number} — ` : ''}
-                        {sop.title}
-                      </h3>
-                      <p className="text-sm text-gray-600 dark:text-gray-400">
-                        {sop.published ? 'Published' : 'Draft'} •{' '}
-                        {formatSopListDate(sop.created_at)}
-                      </p>
+            <>
+              <div className="space-y-2">
+                {sops.map((sop) => {
+                  const canDeleteSop = currentUserId === sop.owner || isSuperUser
+                  return (
+                    <div
+                      key={sop.id}
+                      onClick={() => router.push(`/editor/${sop.id}`)}
+                      className="p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg cursor-pointer touch-target flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <h3 className="font-semibold truncate">
+                          {sop.sop_number != null ? `SOP ${sop.sop_number} — ` : ''}
+                          {sop.title}
+                        </h3>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          {sop.published ? 'Published' : 'Draft'} •{' '}
+                          {formatSopListDate(sop.created_at)}
+                        </p>
+                      </div>
+                      <div
+                        className="flex items-center gap-2 shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {sop.published && (
+                          <span className="text-[10px] leading-none font-normal px-1 py-0.5 rounded-sm bg-green-200 dark:bg-green-800">
+                            Live
+                          </span>
+                        )}
+                        {canDeleteSop && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteSOP(e, sop)}
+                            className="p-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white touch-target"
+                            aria-label={`Delete ${sop.title}`}
+                          >
+                            🗑️
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-                      {sop.published && (
-                        <span className="text-[10px] leading-none font-normal px-1 py-0.5 rounded-sm bg-green-200 dark:bg-green-800">
-                          Live
-                        </span>
-                      )}
-                      {canDeleteSop && (
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeleteSOP(e, sop)}
-                          className="p-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white touch-target"
-                          aria-label={`Delete ${sop.title}`}
-                        >
-                          🗑️
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+                  )
+                })}
+              </div>
+              {hasMore ? (
+                <div
+                  ref={sentinelRef}
+                  className="h-8 flex items-center justify-center py-4 text-sm text-gray-500 dark:text-gray-400"
+                  aria-hidden
+                >
+                  {loadingMore ? 'Loading more…' : ''}
+                </div>
+              ) : sops.length > 0 ? (
+                <p className="text-center py-3 text-xs text-gray-500 dark:text-gray-400">
+                  End of list
+                </p>
+              ) : null}
+            </>
           )}
         </div>
       </div>

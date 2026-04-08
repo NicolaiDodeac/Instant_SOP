@@ -1,32 +1,57 @@
 'use client'
 
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, Suspense } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import { PasswordVisibilityButton } from '@/components/auth/PasswordVisibilityButton'
+import { SIGNUP_EMAIL_EXISTS_CODE } from '@/lib/auth/signup-errors'
 import { useSupabaseClient } from '@/lib/supabase/client'
+
+type AuthMode = 'signin' | 'signup'
 
 function LoginContent() {
   const searchParams = useSearchParams()
   const supabase = useSupabaseClient()
+  const [mode, setMode] = useState<AuthMode>('signin')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [showDuplicateEmailHint, setShowDuplicateEmailHint] = useState(false)
+
+  const passwordInputRef = useRef<HTMLInputElement>(null)
+  const confirmPasswordInputRef = useRef<HTMLInputElement>(null)
+  const focusAfterModeChange = useRef<'password' | 'confirm' | null>(null)
 
   useEffect(() => {
     const err = searchParams.get('error')
     const msg = searchParams.get('message')
+    setShowDuplicateEmailHint(false)
     if (err === 'domain' && msg) setError(decodeURIComponent(msg))
     else if (err === 'exchange_failed') setError('Sign-in failed. Please try again.')
     else if (err === 'missing_code') setError('Invalid sign-in link. Please try again.')
   }, [searchParams])
 
-  const handleSignIn = async (e: React.FormEvent) => {
-    e.preventDefault()
+  useLayoutEffect(() => {
+    const target = focusAfterModeChange.current
+    if (!target) return
+    focusAfterModeChange.current = null
+    if (target === 'confirm') {
+      confirmPasswordInputRef.current?.focus()
+    } else {
+      passwordInputRef.current?.focus()
+    }
+  }, [mode])
+
+  const handleSignIn = async () => {
     setLoading(true)
     setError(null)
     setSuccess(null)
+    setShowDuplicateEmailHint(false)
 
     try {
       const res = await fetch('/api/auth/signin', {
@@ -61,6 +86,7 @@ function LoginContent() {
     if (!supabase) return
     setLoading(true)
     setError(null)
+    setShowDuplicateEmailHint(false)
     try {
       // Use NEXT_PUBLIC_APP_URL on Vercel (e.g. https://your-app.vercel.app) so OAuth redirects to production, not localhost
       const baseUrl =
@@ -86,11 +112,11 @@ function LoginContent() {
     }
   }
 
-  const handleSignUp = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSignUp = async () => {
     setLoading(true)
     setError(null)
     setSuccess(null)
+    setShowDuplicateEmailHint(false)
 
     try {
       const res = await fetch('/api/auth/signup', {
@@ -99,10 +125,19 @@ function LoginContent() {
         body: JSON.stringify({ email, password }),
       })
 
-      const data = await res.json()
+      let data: { error?: string; message?: string; code?: string } = {}
+      try {
+        data = await res.json()
+      } catch {
+        setError('Sign up failed. Please try again.')
+        return
+      }
 
       if (!res.ok) {
         setError(data.error || 'Sign up failed. Please try again.')
+        setShowDuplicateEmailHint(
+          res.status === 409 || data.code === SIGNUP_EMAIL_EXISTS_CODE
+        )
       } else {
         setSuccess(data.message || 'Check your email to confirm your account')
       }
@@ -119,6 +154,41 @@ function LoginContent() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (mode === 'signup') {
+      if (password !== confirmPassword) {
+        setError('Passwords do not match.')
+        setSuccess(null)
+        setShowDuplicateEmailHint(false)
+        return
+      }
+      await handleSignUp()
+      return
+    }
+    await handleSignIn()
+  }
+
+  const switchToSignUp = () => {
+    focusAfterModeChange.current = 'confirm'
+    setMode('signup')
+    setError(null)
+    setSuccess(null)
+    setShowDuplicateEmailHint(false)
+    setConfirmPassword('')
+  }
+
+  const switchToSignIn = () => {
+    focusAfterModeChange.current = 'password'
+    setMode('signin')
+    setError(null)
+    setSuccess(null)
+    setShowDuplicateEmailHint(false)
+    setConfirmPassword('')
+    setShowPassword(false)
+    setShowConfirmPassword(false)
   }
 
   return (
@@ -152,7 +222,7 @@ function LoginContent() {
             <span className="px-2 bg-gray-50 dark:bg-gray-900 text-gray-500">or</span>
           </div>
         </div>
-        <form className="space-y-4" onSubmit={handleSignIn}>
+        <form className="space-y-4" onSubmit={handleFormSubmit}>
           <div>
             <label htmlFor="email" className="block text-sm font-medium mb-2">
               Email
@@ -174,28 +244,79 @@ function LoginContent() {
               <label htmlFor="password" className="block text-sm font-medium">
                 Password
               </label>
-              <Link
-                href="/auth/forgot-password"
-                className="text-sm text-blue-600 dark:text-blue-400 hover:underline touch-target"
-              >
-                Forgot password?
-              </Link>
+              {mode === 'signin' && (
+                <Link
+                  href="/auth/forgot-password"
+                  className="text-sm text-blue-600 dark:text-blue-400 hover:underline touch-target"
+                >
+                  Forgot password?
+                </Link>
+              )}
             </div>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={6}
-              className="w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target text-base"
-              placeholder="••••••"
-            />
+            <div className="relative">
+              <input
+                ref={passwordInputRef}
+                id="password"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+                maxLength={128}
+                className="w-full pl-4 pr-12 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target text-base"
+                placeholder="••••••"
+              />
+              <PasswordVisibilityButton
+                visible={showPassword}
+                onToggle={() => setShowPassword((v) => !v)}
+                labelShow="Show password"
+                labelHide="Hide password"
+              />
+            </div>
           </div>
+          {mode === 'signup' && (
+            <div>
+              <label htmlFor="confirm-password" className="block text-sm font-medium mb-2">
+                Confirm password
+              </label>
+              <div className="relative">
+                <input
+                  ref={confirmPasswordInputRef}
+                  id="confirm-password"
+                  type={showConfirmPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  maxLength={128}
+                  className="w-full pl-4 pr-12 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-black dark:text-white touch-target text-base"
+                  placeholder="••••••"
+                />
+                <PasswordVisibilityButton
+                  visible={showConfirmPassword}
+                  onToggle={() => setShowConfirmPassword((v) => !v)}
+                  labelShow="Show confirm password"
+                  labelHide="Hide confirm password"
+                />
+              </div>
+            </div>
+          )}
           {error && (
-            <div className="p-3 rounded-lg bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 text-sm whitespace-pre-line">
+            <div
+              role="alert"
+              className="p-3 rounded-lg bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 text-sm whitespace-pre-line"
+            >
               {error}
+              {showDuplicateEmailHint && (
+                <p
+                  id="signup-duplicate-next-step"
+                  className="mt-2 pt-2 border-t border-red-200/80 dark:border-red-800/80 text-red-700 dark:text-red-200"
+                >
+                  Try signing in below.
+                </p>
+              )}
             </div>
           )}
           {success && (
@@ -208,16 +329,30 @@ function LoginContent() {
             disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg touch-target disabled:opacity-50"
           >
-            {loading ? 'Loading...' : 'Sign In'}
+            {loading ? 'Loading...' : mode === 'signup' ? 'Create account' : 'Sign In'}
           </button>
-          <button
-            type="button"
-            onClick={handleSignUp}
-            disabled={loading}
-            className="w-full bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 px-4 rounded-lg touch-target disabled:opacity-50"
-          >
-            Sign Up
-          </button>
+          {mode === 'signin' ? (
+            <p className="text-center text-sm text-gray-600 dark:text-gray-400">
+              <button
+                type="button"
+                onClick={switchToSignUp}
+                className="text-blue-600 dark:text-blue-400 font-medium hover:underline touch-target"
+              >
+                Sign up
+              </button>
+            </p>
+          ) : (
+            <p className="text-center text-sm text-gray-600 dark:text-gray-400">
+              <button
+                type="button"
+                onClick={switchToSignIn}
+                className="text-blue-600 dark:text-blue-400 font-medium hover:underline touch-target"
+                aria-describedby={showDuplicateEmailHint ? 'signup-duplicate-next-step' : undefined}
+              >
+                Sign in
+              </button>
+            </p>
+          )}
         </form>
       </div>
     </div>

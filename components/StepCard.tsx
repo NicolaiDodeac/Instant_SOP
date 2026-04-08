@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SOPStep, StepAnnotation } from '@/lib/types'
 import StepPlayer from '@/components/StepPlayer'
+import TextStepCanvas from '@/components/TextStepCanvas'
 
 /** Stored title is often "Step N"; prefer instructions for display. */
 const AUTO_STEP_TITLE = /^Step\s+\d+$/i
@@ -48,6 +49,7 @@ export default function StepCard({
   mediaSignedUrlsReady = true,
 }: StepCardProps) {
   const primary = stepPrimaryText(step)
+  const isTextStep = step.kind === 'text'
   const stepExpectsMedia = !!(step.video_path || step.image_path)
   const hasMediaUrl = !!(videoUrl || imageUrl)
   const [currentTime, setCurrentTime] = useState(0)
@@ -117,7 +119,11 @@ export default function StepCard({
 
       {/* Video or image - Full Width with Rounded Corners */}
       <div className="flex-1 bg-white px-4 pb-4 pt-2 dark:bg-gray-800">
-        {hasMediaUrl ? (
+        {isTextStep ? (
+          <div className="w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto">
+            <TextStepCanvas payload={step.text_payload ?? null} />
+          </div>
+        ) : hasMediaUrl ? (
           <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
             <StepPlayer
               videoUrl={videoUrl}

@@ -31,6 +31,8 @@ export default function VideoCapture({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const galleryInputRef = useRef<HTMLInputElement>(null)
   const [imageCrop, setImageCrop] = useState<{ url: string; mime: string } | null>(null)
+  /** Matches camera / preview frame so SD or landscape fallbacks are not forced into a 9:16 box. */
+  const [previewAspect, setPreviewAspect] = useState<number | null>(null)
 
   useEffect(() => {
     return () => {
@@ -55,18 +57,42 @@ export default function VideoCapture({
         )
         return
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 720 },
-          height: { ideal: 1280 },
-        },
-        audio: false,
-      })
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment',
+            aspectRatio: { ideal: 9 / 16 },
+            width: { ideal: 1080 },
+            height: { ideal: 1920 },
+          },
+          audio: false,
+        })
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 720 },
+            height: { ideal: 1280 },
+          },
+          audio: false,
+        })
+      }
 
       if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        videoRef.current.play()
+        const el = videoRef.current
+        const onMeta = () => {
+          const w = el.videoWidth
+          const h = el.videoHeight
+          if (w > 0 && h > 0) {
+            const r = w / h
+            if (Number.isFinite(r) && r > 0.2 && r < 5) setPreviewAspect(r)
+          }
+        }
+        el.addEventListener('loadedmetadata', onMeta, { once: true })
+        el.srcObject = stream
+        setPreviewAspect(null)
+        void el.play()
       }
 
       const mimeType = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm;codecs=vp9'
@@ -94,6 +120,10 @@ export default function VideoCapture({
 
         // Stop all tracks
         stream.getTracks().forEach((track) => track.stop())
+        if (videoRef.current) {
+          videoRef.current.srcObject = null
+        }
+        setPreviewAspect(null)
 
         onVideoCaptured(blob, durationMs)
         setDuration(0)
@@ -197,7 +227,16 @@ export default function VideoCapture({
         </div>
       ) : (
         <>
-          <div className="relative w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto bg-black rounded-lg overflow-hidden aspect-[9/16] max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]">
+          <div
+            className={`relative w-full mx-auto bg-black rounded-lg overflow-hidden max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px] ${
+              previewAspect != null && previewAspect > 1
+                ? 'max-w-[min(100%,calc(100dvh*16/9))]'
+                : 'max-w-[min(100%,calc(100dvh*9/16))]'
+            }`}
+            style={
+              previewAspect != null ? { aspectRatio: previewAspect } : { aspectRatio: 9 / 16 }
+            }
+          >
             <video
               ref={videoRef}
               className="w-full h-full object-contain"

@@ -31,10 +31,12 @@ export async function PUT(
         id: string
         idx: number
         title: string
+        kind?: 'media' | 'text'
         instructions?: string
         video_path?: string | null
         thumbnail_path?: string | null
         image_path?: string | null
+        text_payload?: object | null
         duration_ms?: number | null
       }>
       annotations?: Record<string, Array<{ t_start_ms: number; t_end_ms: number; kind: 'arrow' | 'label'; x: number; y: number; angle?: number; text?: string; style?: object }>>
@@ -69,10 +71,12 @@ export async function PUT(
         sop_id: sopId,
         idx: step.idx,
         title: step.title ?? '',
+        kind: step.kind === 'text' ? 'text' : 'media',
         instructions: step.instructions ?? null,
         video_path: step.video_path ?? null,
         thumbnail_path: step.thumbnail_path ?? null,
         image_path: step.image_path ?? null,
+        text_payload: step.text_payload ?? null,
         duration_ms: step.duration_ms ?? null,
       }
       if (isUuid(step.id) && existingIds.has(step.id)) {

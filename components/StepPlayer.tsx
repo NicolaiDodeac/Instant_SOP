@@ -65,6 +65,8 @@ export default function StepPlayer({
 }: StepPlayerProps) {
   const isImageMode = !!imageUrl
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
+  /** Display aspect (width/height) from video metadata; avoids forcing all clips into 9:16 when resolution/orientation differs. */
+  const [videoDisplayAspect, setVideoDisplayAspect] = useState<number | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   /** Image loaded, or video poster/first frame is ready to paint (hides loading overlay). */
   const [mediaPaintReady, setMediaPaintReady] = useState(() => {
@@ -144,6 +146,7 @@ export default function StepPlayer({
     } else {
       setMediaPaintReady(!!posterUrl)
     }
+    setVideoDisplayAspect(null)
   }, [isImageMode, videoUrl, posterUrl])
 
   useEffect(() => {
@@ -193,6 +196,15 @@ export default function StepPlayer({
     }
 
     const handleLoadedMetadata = () => {
+      const vw = video.videoWidth
+      const vh = video.videoHeight
+      if (vw > 0 && vh > 0) {
+        const r = vw / vh
+        // Ignore absurd values from bad metadata
+        if (Number.isFinite(r) && r > 0.2 && r < 5) {
+          setVideoDisplayAspect(r)
+        }
+      }
       // Video metadata loaded - duration is now available
       if (video.duration && onDurationUpdate) {
         const durationMs = Math.round(video.duration * 1000)
@@ -479,11 +491,22 @@ export default function StepPlayer({
     )
   }
 
+  const useIntrinsicVideoAspect = !isImageMode && videoDisplayAspect != null
+  const containerAspectStyle =
+    useIntrinsicVideoAspect ? { aspectRatio: videoDisplayAspect } : undefined
+  const containerAspectClass = useIntrinsicVideoAspect ? '' : 'aspect-[9/16]'
+  /** Portrait column width for tall clips; landscape clips use full row width up to 16:9-ish viewport cap. */
+  const containerMaxWClass =
+    useIntrinsicVideoAspect && videoDisplayAspect != null && videoDisplayAspect > 1
+      ? 'max-w-[min(100%,calc(100dvh*16/9))]'
+      : 'max-w-[min(100%,calc(100dvh*9/16))]'
+
   return (
     <div className="space-y-1">
       <div
         ref={containerRef}
-        className="relative w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto bg-black overflow-hidden rounded-lg aspect-[9/16] max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]"
+        style={containerAspectStyle}
+        className={`relative w-full ${containerMaxWClass} mx-auto bg-black overflow-hidden rounded-lg ${containerAspectClass} max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]`}
       >
         {isImageMode ? (
           <img

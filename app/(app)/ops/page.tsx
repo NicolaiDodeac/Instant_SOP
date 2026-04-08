@@ -1,7 +1,14 @@
 import { Suspense } from 'react'
+import { redirect } from 'next/navigation'
+import { getContextTreeForSession } from '@/lib/server/context-tree'
 import OpsSelectClient from './OpsSelectClient'
 
-export default function OpsSelectPage() {
+export default async function OpsSelectPage() {
+  const result = await getContextTreeForSession()
+  if (!result.ok) {
+    redirect('/auth/login')
+  }
+
   return (
     <Suspense
       fallback={
@@ -10,7 +17,7 @@ export default function OpsSelectPage() {
         </div>
       }
     >
-      <OpsSelectClient />
+      <OpsSelectClient initialLines={result.data.lines} />
     </Suspense>
   )
 }

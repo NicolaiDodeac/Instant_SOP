@@ -4,21 +4,20 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { formatMachineFamilyLabel } from '@/lib/format-machine-family'
-import { useSupabaseClient } from '@/lib/supabase/client'
-import type { Line, LineLeg, Machine } from '@/lib/types'
+import type { ContextTreeLine } from '@/lib/types'
 
 const TRAINING_MODULE_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-type TreeLine = Line & { legs: Array<LineLeg & { machines: Machine[] }> }
-
-export default function OpsSelectClient() {
+export default function OpsSelectClient({
+  initialLines,
+}: {
+  initialLines: ContextTreeLine[]
+}) {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const supabase = useSupabaseClient()
 
-  const [lines, setLines] = useState<TreeLine[]>([])
-  const [loading, setLoading] = useState(true)
+  const [lines] = useState<ContextTreeLine[]>(() => initialLines)
 
   const [lineId, setLineId] = useState<string>('')
   const [legId, setLegId] = useState<string>('')
@@ -28,23 +27,6 @@ export default function OpsSelectClient() {
   const [linePickerOpen, setLinePickerOpen] = useState(false)
   const [legPickerOpen, setLegPickerOpen] = useState(false)
   const [machinePickerOpen, setMachinePickerOpen] = useState(false)
-
-  useEffect(() => {
-    void (async () => {
-      const { data } = await supabase.auth.getUser()
-      if (!data?.user) {
-        router.replace('/auth/login')
-        return
-      }
-      try {
-        const res = await fetch('/api/context/tree')
-        const body = (await res.json()) as { lines?: TreeLine[] }
-        setLines(body.lines ?? [])
-      } finally {
-        setLoading(false)
-      }
-    })()
-  }, [router, supabase])
 
   const trainingModuleIdFromUrl = searchParams.get('trainingModuleId')?.trim() ?? ''
 
@@ -83,14 +65,6 @@ export default function OpsSelectClient() {
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
     router.push(`/ops/machine/${encodeURIComponent(machineId)}${suffix}`)
   }, [machineId, trainingModuleId, router])
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-        <p className="text-gray-500">Loading…</p>
-      </div>
-    )
-  }
 
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right safe-bottom bg-gray-50 dark:bg-gray-900">

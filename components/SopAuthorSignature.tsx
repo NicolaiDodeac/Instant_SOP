@@ -59,14 +59,20 @@ export function SopAuthorAvatar({
 /** Created by + updated (with last editor when different from owner). Authenticated API. */
 export function SopCreatedUpdatedFooter({
   sopId,
+  initialMeta,
   className = '',
 }: {
   sopId: string
+  /** When provided (e.g. from RSC), skips client fetch. */
+  initialMeta?: SopAuthorMeta | null
   className?: string
 }) {
-  const [meta, setMeta] = useState<SopAuthorMeta | null | undefined>(undefined)
+  const [meta, setMeta] = useState<SopAuthorMeta | null | undefined>(() =>
+    initialMeta !== undefined ? initialMeta : undefined
+  )
 
   useEffect(() => {
+    if (initialMeta !== undefined) return
     let cancelled = false
     void (async () => {
       const res = await fetch(`/api/sop-author?sopId=${encodeURIComponent(sopId)}`)
@@ -80,7 +86,7 @@ export function SopCreatedUpdatedFooter({
     return () => {
       cancelled = true
     }
-  }, [sopId])
+  }, [sopId, initialMeta])
 
   if (meta === undefined) {
     return (

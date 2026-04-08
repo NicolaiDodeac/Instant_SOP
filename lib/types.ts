@@ -48,6 +48,69 @@ export interface Machine {
   machine_family?: MachineFamily
 }
 
+/** Line → legs → machines (context tree for ops / API `/api/context/tree`). */
+export type ContextTreeLine = Line & {
+  legs: Array<LineLeg & { machines: Machine[] }>
+}
+
+/** Full context API payload (`/api/context/tree`, `loadContextTreeForSession`). */
+export type ContextTreePayload = {
+  lines: ContextTreeLine[]
+  machineFamilies: MachineFamily[]
+  trainingModules: TrainingModule[]
+}
+
+/** SOP routing attachments (`GET/PUT` `/api/sops/[id]/attachments` ids only). */
+export type SopRoutingAttachments = {
+  trainingModuleIds: string[]
+  machineFamilyIds: string[]
+  stationIds: string[]
+  lineIds: string[]
+  lineLegIds: string[]
+  machineIds: string[]
+}
+
+/** Ops machine detail + stations (server-first load; same shape as GET `/api/context/machine`). */
+export type OpsMachineContext = {
+  machine: {
+    id: string
+    name: string
+    code: string | null
+    line_leg_id: string
+    machine_family_id: string
+    machine_family: MachineFamily | null
+  }
+  leg: {
+    id: string
+    code: string
+    name: string
+    line_id: string
+    line: Line | null
+  } | null
+  stationsBySection: Record<string, MachineFamilyStation[]>
+}
+
+/** GET `/api/context/sops` JSON body (machine context SOP lists). */
+export type OpsContextSopsPayload = {
+  context: {
+    machineId: string
+    lineLegId: string
+    lineId: string | null
+    machineFamilyId: string
+    stationCode: number | null
+    stationId: string | null
+    trainingModuleId: string | null
+    trainingModule: { id: string; name: string } | null
+  }
+  station: { id: string; station_code: number; name: string; section: string } | null
+  results: {
+    machine: { station: SOP[]; general: SOP[] }
+    leg: { station: SOP[]; general: SOP[] }
+    line: { station: SOP[]; general: SOP[] }
+    family: { station: SOP[]; general: SOP[] }
+  }
+}
+
 export interface MachineFamilyStation {
   id: string
   machine_family_id: string

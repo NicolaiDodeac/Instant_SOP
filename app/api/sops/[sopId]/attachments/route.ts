@@ -1,15 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
+import { querySopRoutingAttachments } from '@/lib/server/sop-attachments-read'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
-
-type Attachments = {
-  trainingModuleIds: string[]
-  machineFamilyIds: string[]
-  stationIds: string[]
-  lineIds: string[]
-  lineLegIds: string[]
-  machineIds: string[]
-}
+import type { SopRoutingAttachments } from '@/lib/types'
 
 export async function GET(
   _request: NextRequest,
@@ -28,33 +21,8 @@ export async function GET(
     }
 
     const service = createServiceRoleClient()
-    const { data: sop } = await service.from('sops').select('id').eq('id', sopId).maybeSingle()
-    if (!sop) return NextResponse.json({ error: 'SOP not found' }, { status: 404 })
-
-    const [
-      modules,
-      families,
-      stations,
-      lines,
-      legs,
-      machines,
-    ] = await Promise.all([
-      service.from('sop_training_modules').select('training_module_id').eq('sop_id', sopId),
-      service.from('sop_machine_families').select('machine_family_id').eq('sop_id', sopId),
-      service.from('sop_machine_family_stations').select('station_id').eq('sop_id', sopId),
-      service.from('sop_lines').select('line_id').eq('sop_id', sopId),
-      service.from('sop_line_legs').select('line_leg_id').eq('sop_id', sopId),
-      service.from('sop_machines').select('machine_id').eq('sop_id', sopId),
-    ])
-
-    const payload: Attachments = {
-      trainingModuleIds: (modules.data ?? []).map((r: any) => String(r.training_module_id)),
-      machineFamilyIds: (families.data ?? []).map((r: any) => String(r.machine_family_id)),
-      stationIds: (stations.data ?? []).map((r: any) => String(r.station_id)),
-      lineIds: (lines.data ?? []).map((r: any) => String(r.line_id)),
-      lineLegIds: (legs.data ?? []).map((r: any) => String(r.line_leg_id)),
-      machineIds: (machines.data ?? []).map((r: any) => String(r.machine_id)),
-    }
+    const payload = await querySopRoutingAttachments(service, sopId)
+    if (!payload) return NextResponse.json({ error: 'SOP not found' }, { status: 404 })
 
     return NextResponse.json(payload)
   } catch (err) {
@@ -79,8 +47,8 @@ export async function PUT(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const body = (await request.json()) as Partial<Attachments>
-    const next: Attachments = {
+    const body = (await request.json()) as Partial<SopRoutingAttachments>
+    const next: SopRoutingAttachments = {
       trainingModuleIds: body.trainingModuleIds ?? [],
       machineFamilyIds: body.machineFamilyIds ?? [],
       stationIds: body.stationIds ?? [],
@@ -93,14 +61,13 @@ export async function PUT(
     const { data: sop } = await service.from('sops').select('owner').eq('id', sopId).single()
     if (!sop) return NextResponse.json({ error: 'SOP not found' }, { status: 404 })
 
-    const ownerId = String((sop as any).owner)
+    const ownerId = String((sop as { owner: string }).owner)
     const superUser = await resolveIsSuperUser(service, user.id)
     const canEdit = ownerId === user.id || superUser
     if (!canEdit) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // Replace-all strategy (simple + predictable).
     await Promise.all([
       service.from('sop_training_modules').delete().eq('sop_id', sopId),
       service.from('sop_machine_families').delete().eq('sop_id', sopId),
@@ -145,4 +112,3 @@ export async function PUT(
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
-

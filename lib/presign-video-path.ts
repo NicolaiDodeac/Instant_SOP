@@ -18,6 +18,10 @@ export async function presignGetForVideoPath(
     return { ok: false, status: 400, error: 'Invalid path format' }
   }
 
+  if (!userId) {
+    return { ok: false, status: 401, error: 'Unauthorized' }
+  }
+
   const { data: stepByVideo, error: stepVideoError } = await supabase
     .from('sop_steps')
     .select('sop_id, sops!inner(owner, published)')

@@ -3,10 +3,17 @@ import { createClientServer } from '@/lib/supabase/server'
 
 const ALLOWED_DOMAIN = 'magna.co.uk'
 
+function safeNextPath(raw: string | null): string {
+  if (!raw) return '/dashboard'
+  const t = raw.trim()
+  if (!t.startsWith('/') || t.startsWith('//')) return '/dashboard'
+  return t
+}
+
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url)
   const code = requestUrl.searchParams.get('code')
-  const next = requestUrl.searchParams.get('next') ?? '/dashboard'
+  const next = safeNextPath(requestUrl.searchParams.get('next'))
 
   if (!code) {
     return NextResponse.redirect(new URL('/auth/login?error=missing_code', requestUrl.origin))

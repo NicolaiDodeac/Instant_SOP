@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { headObjectExists, presignGetObject } from '@/lib/r2'
+import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 
 export type PresignPathResult =
   | { ok: true; url: string }
@@ -11,9 +12,7 @@ export async function getIsSuperUser(supabase: SupabaseClient, userId: string): 
     .select('user_id')
     .eq('user_id', userId)
     .maybeSingle()
-  let isSuperUser = !!superRow
-  if (process.env.SUPER_USER_ID && process.env.SUPER_USER_ID === userId) isSuperUser = true
-  return isSuperUser
+  return !!superRow || isSuperUserIdFromEnv(userId)
 }
 
 /**

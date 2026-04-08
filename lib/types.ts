@@ -5,6 +5,60 @@ export interface SopAuthorInfo {
   avatarUrl: string | null
 }
 
+export interface TrainingModule {
+  id: string
+  code: string
+  name: string
+  description?: string | null
+  active: boolean
+}
+
+export interface MachineFamily {
+  id: string
+  code: string
+  name: string
+  supplier?: string | null
+  active: boolean
+  /** When true, station_code is shown on HMI-style machines and used in ?stationCode= URLs. */
+  uses_hmi_station_codes?: boolean
+}
+
+export interface Line {
+  id: string
+  code?: string | null
+  name: string
+  active: boolean
+}
+
+export interface LineLeg {
+  id: string
+  line_id: string
+  code: string
+  name: string
+  active: boolean
+}
+
+export interface Machine {
+  id: string
+  line_leg_id: string
+  machine_family_id: string
+  code?: string | null
+  name: string
+  active: boolean
+  machine_family?: MachineFamily
+}
+
+export interface MachineFamilyStation {
+  id: string
+  machine_family_id: string
+  station_code: number
+  name: string
+  section: string
+  sort_order?: number | null
+  keywords?: string | null
+  active: boolean
+}
+
 /** Creator, optional last editor (when different from owner), and timestamps */
 export interface SopAuthorMeta {
   creator: SopAuthorInfo
@@ -16,6 +70,8 @@ export interface SopAuthorMeta {
 
 export interface SOP {
   id: string
+  /** Stable numeric code for quick communication (OPL / supervisors). */
+  sop_number?: number | null
   title: string
   description?: string
   owner: string

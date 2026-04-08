@@ -244,6 +244,7 @@ export default function PublicViewerPage() {
             ← Back
           </Link>
           <h1 className="flex-1 text-xl font-bold text-center truncate pr-10">
+            {sop.sop_number != null ? `SOP ${sop.sop_number} — ` : ''}
             {sop.title}
           </h1>
         </div>

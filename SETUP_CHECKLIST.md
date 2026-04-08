@@ -97,6 +97,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 # Optional: your user UUID (from Supabase Auth → Users). Only this user can access Admin → Manage editors.
 SUPER_USER_ID=your-user-uuid-here
+# Or several: SUPER_USER_ID=uuid1,uuid2,uuid3
 # For production (e.g. Vercel): your app URL so OAuth redirects to the deployed app, not localhost.
 # NEXT_PUBLIC_APP_URL=https://your-app.vercel.app
 
@@ -108,7 +109,7 @@ SUPER_USER_ID=your-user-uuid-here
 # R2_REGION=auto
 ```
 
-**Replace the values** with what you copied from Supabase and Cloudflare. For `SUPER_USER_ID`, use your own user UUID from **Authentication → Users** in Supabase. Only that user can open **Manage editors** (admin cabinet) to add or remove who can create SOPs. If you also want to create SOPs yourself, add your own email in that cabinet so you appear in the editors list.
+**Replace the values** with what you copied from Supabase and Cloudflare. For `SUPER_USER_ID`, use one or more user UUIDs from **Authentication → Users** (comma-separated). Those users can open **Manage editors** (admin cabinet). You can also add super users in the `super_users` table in Supabase. If you also want to create SOPs yourself, add your own email in that cabinet so you appear in the editors list.
 
 ⚠️ **IMPORTANT**: 
 - Never commit `.env.local` to git (it's already in `.gitignore`)

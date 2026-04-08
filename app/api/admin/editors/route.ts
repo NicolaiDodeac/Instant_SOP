@@ -1,38 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
-
-/**
- * Same rules as GET /api/user/me: super user if listed in `super_users` OR `SUPER_USER_ID` matches.
- * (Previously this route only checked the env var, so DB-only super users could not use Manage editors.)
- */
-async function requireSuperUser(supabase: Awaited<ReturnType<typeof createClientServer>>) {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-  if (authError || !user) {
-    return { ok: false, status: 401 as const, json: { error: 'Unauthorized' } }
-  }
-
-  let isSuperUser = false
-  try {
-    const { data: superUserRow } = await supabase
-      .from('super_users')
-      .select('user_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-    isSuperUser = !!superUserRow
-  } catch {
-    // super_users table may not exist on very old DBs
-  }
-  const superUserIdEnv = process.env.SUPER_USER_ID
-  if (superUserIdEnv && superUserIdEnv === user.id) isSuperUser = true
-
-  if (!isSuperUser) {
-    return { ok: false, status: 403 as const, json: { error: 'Forbidden' } }
-  }
-  return { ok: true, user } as const
-}
+import { requireSuperUser } from '@/lib/require-super-user-server'
 
 export async function GET() {
   const supabase = await createClientServer()

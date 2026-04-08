@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import type { StepAnnotation } from '@/lib/types'
+import { getMp4VideoRotationFromUrl } from '@/lib/mp4-tkhd-rotation'
 import { getVideoDisplayAspectRatio } from '@/lib/video-display-aspect'
 
 interface StepPlayerProps {
@@ -68,6 +69,10 @@ export default function StepPlayer({
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
   /** Display aspect (width/height) from video metadata; avoids forcing all clips into 9:16 when resolution/orientation differs. */
   const [videoDisplayAspect, setVideoDisplayAspect] = useState<number | null>(null)
+  /** Clockwise CSS rotation for the video layer when MP4 tkhd rotation is ignored by the decoder (common on Android). */
+  const [videoPixelRotationFix, setVideoPixelRotationFix] = useState(0)
+  /** Rotation degrees read from MP4 tkhd (null until parsed or non-MP4). */
+  const [mp4FileRotation, setMp4FileRotation] = useState<number | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   /** Image loaded, or video poster/first frame is ready to paint (hides loading overlay). */
   const [mediaPaintReady, setMediaPaintReady] = useState(() => {
@@ -148,7 +153,23 @@ export default function StepPlayer({
       setMediaPaintReady(!!posterUrl)
     }
     setVideoDisplayAspect(null)
+    setVideoPixelRotationFix(0)
   }, [isImageMode, videoUrl, posterUrl])
+
+  useEffect(() => {
+    if (isImageMode || !videoUrl) {
+      setMp4FileRotation(null)
+      return
+    }
+    setMp4FileRotation(null)
+    let cancelled = false
+    void getMp4VideoRotationFromUrl(videoUrl).then((rot) => {
+      if (!cancelled) setMp4FileRotation(rot)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isImageMode, videoUrl])
 
   useEffect(() => {
     const el = containerRef.current
@@ -196,13 +217,27 @@ export default function StepPlayer({
       }
     }
 
-    const applyDisplayAspect = () => {
-      const r = getVideoDisplayAspectRatio(video)
-      if (r != null) setVideoDisplayAspect(r)
+    const applyVideoLayout = () => {
+      const vw = video.videoWidth
+      const vh = video.videoHeight
+      const fr = mp4FileRotation
+
+      let fix = 0
+      let aspect = getVideoDisplayAspectRatio(video)
+
+      if (fr != null && vw > 0 && vh > 0 && vw > vh && (fr === 90 || fr === 270)) {
+        fix = fr
+        aspect = vh / vw
+      } else if (fr === 180 && vw > 0 && vh > 0 && vw > vh) {
+        fix = 180
+      }
+
+      if (aspect != null) setVideoDisplayAspect(aspect)
+      setVideoPixelRotationFix(fix)
     }
 
     const handleLoadedMetadata = () => {
-      applyDisplayAspect()
+      applyVideoLayout()
       // Video metadata loaded - duration is now available
       if (video.duration && onDurationUpdate) {
         const durationMs = Math.round(video.duration * 1000)
@@ -242,7 +277,7 @@ export default function StepPlayer({
     let rvfcHandle: number | undefined
     try {
       rvfcHandle = video.requestVideoFrameCallback(() => {
-        applyDisplayAspect()
+        applyVideoLayout()
         if (rvfcHandle !== undefined) {
           video.cancelVideoFrameCallback(rvfcHandle)
           rvfcHandle = undefined
@@ -268,7 +303,7 @@ export default function StepPlayer({
       video.removeEventListener('loadeddata', handleLoadedData)
       video.removeEventListener('error', handleVideoError)
     }
-  }, [onTimeUpdate, onDurationUpdate, videoUrl, isImageMode])
+  }, [onTimeUpdate, onDurationUpdate, videoUrl, isImageMode, mp4FileRotation])
 
   useEffect(() => {
     if (isImageMode) return
@@ -334,9 +369,9 @@ export default function StepPlayer({
   const normToPixel = (norm: number, dimension: number) => norm * dimension
   const pixelToNorm = (pixel: number, dimension: number) => pixel / dimension
 
-  const getPointerPosition = (e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent): { x: number; y: number } | null => {
-    if (!svgRef.current) return null
-    const rect = svgRef.current.getBoundingClientRect()
+  const getPointerPosition = useCallback((e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent): { x: number; y: number } | null => {
+    const svg = svgRef.current
+    if (!svg) return null
     let clientX: number
     let clientY: number
     if ('touches' in e && e.touches.length > 0) {
@@ -348,11 +383,23 @@ export default function StepPlayer({
     } else {
       return null
     }
+    if (typeof svg.createSVGPoint === 'function' && typeof svg.getScreenCTM === 'function') {
+      const pt = svg.createSVGPoint()
+      pt.x = clientX
+      pt.y = clientY
+      const ctm = svg.getScreenCTM()
+      if (ctm) {
+        const inv = ctm.inverse()
+        const p = pt.matrixTransform(inv)
+        return { x: p.x, y: p.y }
+      }
+    }
+    const rect = svg.getBoundingClientRect()
     return {
       x: clientX - rect.left,
       y: clientY - rect.top,
     }
-  }
+  }, [])
 
   // Handle annotation drag start
   const handleAnnotationMouseDown = useCallback((e: React.MouseEvent | React.TouchEvent, annotationId: string) => {
@@ -527,39 +574,410 @@ export default function StepPlayer({
         className={`relative w-full ${containerMaxWClass} mx-auto bg-black overflow-hidden rounded-lg ${containerAspectClass} max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]`}
       >
         {isImageMode ? (
-          <img
-            ref={imageRef}
-            src={imageUrl!}
-            alt="Step"
-            className="absolute select-none"
-            style={{
-              left: '50%',
-              top: '50%',
-              transform: 'translate(-50%, -50%)',
-              zIndex: 1,
-              ...(dimensions.width > 0 && dimensions.height > 0
-                ? { width: dimensions.width, height: dimensions.height }
-                : { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }),
-            }}
-            onLoad={() => {
-              setMediaPaintReady(true)
-              updateDimensions()
-            }}
-            onError={() => setMediaPaintReady(true)}
-            draggable={false}
-          />
+          <>
+            <img
+              ref={imageRef}
+              src={imageUrl!}
+              alt="Step"
+              className="absolute select-none"
+              style={{
+                left: '50%',
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
+                zIndex: 1,
+                ...(dimensions.width > 0 && dimensions.height > 0
+                  ? { width: dimensions.width, height: dimensions.height }
+                  : { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }),
+              }}
+              onLoad={() => {
+                setMediaPaintReady(true)
+                updateDimensions()
+              }}
+              onError={() => setMediaPaintReady(true)}
+              draggable={false}
+            />
+            <svg
+              ref={svgRef}
+              className="absolute pointer-events-auto"
+              width={dimensions.width || 1}
+              height={dimensions.height || 1}
+              viewBox={`0 0 ${dimensions.width || 1} ${dimensions.height || 1}`}
+              style={{
+                zIndex: 5,
+                  pointerEvents: filterAnnotationsByTime ? 'none' : 'auto',
+                  left: '50%',
+                  top: '50%',
+                  transform: 'translate(-50%, -50%)',
+                width: dimensions.width || 1,
+                height: dimensions.height || 1,
+              }}
+              onClick={(e) => {
+                if (filterAnnotationsByTime) return
+                if (e.target === svgRef.current) {
+                  onSelectAnnotation(null)
+                }
+              }}
+            >
+              <defs>
+                <filter id="arrow-drop-shadow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feDropShadow dx={0} dy={2} stdDeviation={3} floodColor="rgba(0,0,0,0.5)" floodOpacity={1} />
+                </filter>
+              </defs>
+              {dimensions.width > 0 && dimensions.height > 0 && visibleAnnotations.map((ann) => {
+                const x = normToPixel(ann.x, dimensions.width)
+                const y = normToPixel(ann.y, dimensions.height)
+                const isSelected = ann.id === selectedAnnotationId
+
+                if (ann.kind === 'arrow') {
+                  const angle = ann.angle ?? 0
+                  const sizeMult = (ann.style?.strokeWidth ?? 35) / 35
+                  const baseLength = Math.min(dimensions.width, dimensions.height) * 0.28
+                  const length = Math.max(120, baseLength) * sizeMult
+                  const rad = (angle * Math.PI) / 180
+                  const endX = Math.cos(rad) * length
+                  const endY = Math.sin(rad) * length
+                  const tipRatio = 0.88
+                  const tipX = Math.cos(rad) * length * tipRatio
+                  const tipY = Math.sin(rad) * length * tipRatio
+                  const arrowHeight = length * 0.28
+
+                  return (
+                    <g
+                      key={ann.id}
+                      transform={`translate(${x}, ${y})`}
+                      filter="url(#arrow-drop-shadow)"
+                      onMouseDown={(e) => handleAnnotationMouseDown(e, ann.id)}
+                      onTouchStart={(e) => handleAnnotationMouseDown(e, ann.id)}
+                      style={{ cursor: 'move' }}
+                    >
+                      <line
+                        x1={0}
+                        y1={0}
+                        x2={endX}
+                        y2={endY}
+                        stroke="transparent"
+                        strokeWidth={32}
+                        pointerEvents="stroke"
+                      />
+                      <image
+                        href="/88c94d22-6a88-414e-b516-3703d91d3f46.png"
+                        x={0}
+                        y={-arrowHeight / 2}
+                        width={length}
+                        height={arrowHeight}
+                        preserveAspectRatio="xMinYMid meet"
+                        transform={`rotate(${angle})`}
+                      />
+                      {isSelected && !filterAnnotationsByTime && (
+                        <g
+                          transform={`translate(${tipX}, ${tipY})`}
+                          onMouseDown={(e) => {
+                            e.stopPropagation()
+                            handleRotateMouseDown(e, ann.id)
+                          }}
+                          onTouchStart={(e) => {
+                            e.stopPropagation()
+                            handleRotateMouseDown(e, ann.id)
+                          }}
+                          style={{ cursor: 'grab' }}
+                        >
+                          <circle cx={0} cy={0} r={12} fill="#ffffff" stroke="#000000" strokeWidth={2} opacity={0.8} />
+                          <text x={0} y={0} textAnchor="middle" dominantBaseline="middle" fontSize={16} fill="#000000">
+                            🔄
+                          </text>
+                        </g>
+                      )}
+                    </g>
+                  )
+                } else {
+                  const color = isSelected ? '#ff0000' : ann.style?.color || '#ffffff'
+                  const fontSize = ann.style?.fontSize || 28
+                  const rawText = ann.text || 'Label'
+                  const lines = rawText.split('\n')
+                  const lineHeight = fontSize * 1.2
+                  const charWidth = fontSize * 0.55
+                  const maxLineLen = Math.max(...lines.map((l) => l.length), 1)
+                  const blockWidth = maxLineLen * charWidth
+                  const blockHeight = lines.length * lineHeight + 12
+
+                  return (
+                    <g
+                      key={ann.id}
+                      transform={`translate(${x}, ${y})`}
+                      onMouseDown={filterAnnotationsByTime ? undefined : (e) => handleAnnotationMouseDown(e, ann.id)}
+                      onTouchStart={filterAnnotationsByTime ? undefined : (e) => handleAnnotationMouseDown(e, ann.id)}
+                      style={{ cursor: filterAnnotationsByTime ? 'default' : 'move', pointerEvents: filterAnnotationsByTime ? 'none' : 'auto' }}
+                    >
+                      <rect
+                        x={-blockWidth / 2}
+                        y={-blockHeight / 2}
+                        width={blockWidth}
+                        height={blockHeight}
+                        fill={isSelected ? 'rgba(255, 0, 0, 0.2)' : 'rgba(0, 0, 0, 0.5)'}
+                        rx={4}
+                      />
+                      <text
+                        x={0}
+                        y={-(lines.length - 1) * (lineHeight / 2)}
+                        textAnchor="middle"
+                        fontSize={fontSize}
+                        fill={color}
+                        stroke={isSelected ? '#ff0000' : '#000000'}
+                        strokeWidth={2}
+                        paintOrder="stroke"
+                      >
+                        {lines.map((line, i) => (
+                          <tspan key={i} x={0} dy={i === 0 ? 0 : lineHeight}>
+                            {line || ' '}
+                          </tspan>
+                        ))}
+                      </text>
+                    </g>
+                  )
+                }
+              })}
+            </svg>
+          </>
         ) : (
-          <video
-            ref={videoRef}
-            src={videoUrl!}
-            className="w-full h-full object-contain"
-            playsInline
-            controls={showControls}
-            muted
-            loop={false}
-            poster={posterUrl || undefined}
-            {...(videoPreload !== undefined ? { preload: videoPreload } : {})}
-          />
+          <div
+            className="absolute inset-0"
+            style={
+              videoPixelRotationFix
+                ? {
+                    transform: `rotate(${videoPixelRotationFix}deg)`,
+                    transformOrigin: 'center center',
+                  }
+                : undefined
+            }
+          >
+            <video
+              ref={videoRef}
+              src={videoUrl!}
+              className="absolute inset-0 h-full w-full object-contain"
+              playsInline
+              controls={showControls}
+              muted
+              loop={false}
+              poster={posterUrl || undefined}
+              {...(videoPreload !== undefined ? { preload: videoPreload } : {})}
+            />
+            {showRestartButton && (
+              <button
+                type="button"
+                aria-label="Restart from beginning"
+                className="absolute right-2 top-2 z-30 flex h-10 w-10 touch-target items-center justify-center rounded-full bg-black/25 text-white/85 shadow-sm backdrop-blur-[2px] transition hover:bg-black/40 hover:text-white active:scale-95"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  e.preventDefault()
+                  const v = videoRef.current
+                  if (!v) return
+                  v.currentTime = 0
+                  void v.play().catch(() => {})
+                }}
+              >
+                <svg
+                  className="h-5 w-5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                  <path d="M3 3v5h5" />
+                </svg>
+              </button>
+            )}
+            {!showControls && (
+              <div
+                className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                style={{ zIndex: 20 }}
+              >
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    e.preventDefault()
+                    togglePlayPause()
+                  }}
+                  onMouseDown={(e) => {
+                    e.stopPropagation()
+                    e.preventDefault()
+                  }}
+                  onTouchStart={(e) => {
+                    e.stopPropagation()
+                  }}
+                  className={`pointer-events-auto w-14 h-14 md:w-16 md:h-16 bg-white bg-opacity-90 rounded-full flex items-center justify-center shadow-lg transition-opacity hover:bg-opacity-100 active:scale-95 touch-target ${
+                    isPlaying ? 'opacity-0 hover:opacity-100 active:opacity-100' : 'opacity-100'
+                  }`}
+                  aria-label={isPlaying ? 'Pause' : 'Play'}
+                  type="button"
+                >
+                  {isPlaying ? (
+                    <svg className="w-8 h-8 text-black" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                    </svg>
+                  ) : (
+                    <svg className="w-8 h-8 text-black ml-1" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                  )}
+                </button>
+              </div>
+            )}
+            <svg
+              ref={svgRef}
+              className="absolute inset-0 h-full w-full pointer-events-auto"
+              width={dimensions.width || 1}
+              height={dimensions.height || 1}
+              viewBox={`0 0 ${dimensions.width || 1} ${dimensions.height || 1}`}
+              style={{
+                zIndex: 5,
+                pointerEvents: filterAnnotationsByTime ? 'none' : 'auto',
+              }}
+              onClick={(e) => {
+                if (filterAnnotationsByTime) return
+                if (e.target === svgRef.current) {
+                  onSelectAnnotation(null)
+                }
+              }}
+            >
+              <defs>
+                <filter id="arrow-drop-shadow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feDropShadow dx={0} dy={2} stdDeviation={3} floodColor="rgba(0,0,0,0.5)" floodOpacity={1} />
+                </filter>
+              </defs>
+              {dimensions.width > 0 && dimensions.height > 0 && visibleAnnotations.map((ann) => {
+                const x = normToPixel(ann.x, dimensions.width)
+                const y = normToPixel(ann.y, dimensions.height)
+                const isSelected = ann.id === selectedAnnotationId
+
+                if (ann.kind === 'arrow') {
+                  const angle = ann.angle ?? 0
+                  const sizeMult = (ann.style?.strokeWidth ?? 35) / 35
+                  const baseLength = Math.min(dimensions.width, dimensions.height) * 0.28
+                  const length = Math.max(120, baseLength) * sizeMult
+                  const rad = (angle * Math.PI) / 180
+                  const endX = Math.cos(rad) * length
+                  const endY = Math.sin(rad) * length
+                  const tipRatio = 0.88
+                  const tipX = Math.cos(rad) * length * tipRatio
+                  const tipY = Math.sin(rad) * length * tipRatio
+                  const arrowHeight = length * 0.28
+
+                  return (
+                    <g
+                      key={ann.id}
+                      transform={`translate(${x}, ${y})`}
+                      filter="url(#arrow-drop-shadow)"
+                      onMouseDown={(e) => handleAnnotationMouseDown(e, ann.id)}
+                      onTouchStart={(e) => handleAnnotationMouseDown(e, ann.id)}
+                      style={{ cursor: 'move' }}
+                    >
+                      <line
+                        x1={0}
+                        y1={0}
+                        x2={endX}
+                        y2={endY}
+                        stroke="transparent"
+                        strokeWidth={32}
+                        pointerEvents="stroke"
+                      />
+                      <image
+                        href="/88c94d22-6a88-414e-b516-3703d91d3f46.png"
+                        x={0}
+                        y={-arrowHeight / 2}
+                        width={length}
+                        height={arrowHeight}
+                        preserveAspectRatio="xMinYMid meet"
+                        transform={`rotate(${angle})`}
+                      />
+                      {isSelected && !filterAnnotationsByTime && (
+                        <g
+                          transform={`translate(${tipX}, ${tipY})`}
+                          onMouseDown={(e) => {
+                            e.stopPropagation()
+                            handleRotateMouseDown(e, ann.id)
+                          }}
+                          onTouchStart={(e) => {
+                            e.stopPropagation()
+                            handleRotateMouseDown(e, ann.id)
+                          }}
+                          style={{ cursor: 'grab' }}
+                        >
+                          <circle
+                            cx={0}
+                            cy={0}
+                            r={12}
+                            fill="#ffffff"
+                            stroke="#000000"
+                            strokeWidth={2}
+                            opacity={0.8}
+                          />
+                          <text
+                            x={0}
+                            y={0}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            fontSize={16}
+                            fill="#000000"
+                          >
+                            🔄
+                          </text>
+                        </g>
+                      )}
+                    </g>
+                  )
+                } else {
+                  const color = isSelected ? '#ff0000' : ann.style?.color || '#ffffff'
+                  const fontSize = ann.style?.fontSize || 28
+                  const rawText = ann.text || 'Label'
+                  const lines = rawText.split('\n')
+                  const lineHeight = fontSize * 1.2
+                  const charWidth = fontSize * 0.55
+                  const maxLineLen = Math.max(...lines.map((l) => l.length), 1)
+                  const blockWidth = maxLineLen * charWidth
+                  const blockHeight = lines.length * lineHeight + 12
+
+                  return (
+                    <g
+                      key={ann.id}
+                      transform={`translate(${x}, ${y})`}
+                      onMouseDown={filterAnnotationsByTime ? undefined : (e) => handleAnnotationMouseDown(e, ann.id)}
+                      onTouchStart={filterAnnotationsByTime ? undefined : (e) => handleAnnotationMouseDown(e, ann.id)}
+                      style={{ cursor: filterAnnotationsByTime ? 'default' : 'move', pointerEvents: filterAnnotationsByTime ? 'none' : 'auto' }}
+                    >
+                      <rect
+                        x={-blockWidth / 2}
+                        y={-blockHeight / 2}
+                        width={blockWidth}
+                        height={blockHeight}
+                        fill={isSelected ? 'rgba(255, 0, 0, 0.2)' : 'rgba(0, 0, 0, 0.5)'}
+                        rx={4}
+                      />
+                      <text
+                        x={0}
+                        y={-(lines.length - 1) * (lineHeight / 2)}
+                        textAnchor="middle"
+                        fontSize={fontSize}
+                        fill={color}
+                        stroke={isSelected ? '#ff0000' : '#000000'}
+                        strokeWidth={2}
+                        paintOrder="stroke"
+                      >
+                        {lines.map((line, i) => (
+                          <tspan key={i} x={0} dy={i === 0 ? 0 : lineHeight}>
+                            {line || ' '}
+                          </tspan>
+                        ))}
+                      </text>
+                    </g>
+                  )
+                }
+              })}
+            </svg>
+          </div>
         )}
         {!mediaPaintReady && (
           <div
@@ -570,247 +988,6 @@ export default function StepPlayer({
             <span className="text-xs text-white/70">Loading…</span>
           </div>
         )}
-        {!isImageMode && showRestartButton && (
-          <button
-            type="button"
-            aria-label="Restart from beginning"
-            className="absolute right-2 top-2 z-30 flex h-10 w-10 touch-target items-center justify-center rounded-full bg-black/25 text-white/85 shadow-sm backdrop-blur-[2px] transition hover:bg-black/40 hover:text-white active:scale-95"
-            onClick={(e) => {
-              e.stopPropagation()
-              e.preventDefault()
-              const video = videoRef.current
-              if (!video) return
-              video.currentTime = 0
-              void video.play().catch(() => {})
-            }}
-          >
-            <svg
-              className="h-5 w-5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-              <path d="M3 3v5h5" />
-            </svg>
-          </button>
-        )}
-        {!isImageMode && !showControls && (
-          <div
-            className="absolute inset-0 flex items-center justify-center pointer-events-none"
-            style={{ zIndex: 20 }}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                e.preventDefault()
-                togglePlayPause()
-              }}
-              onMouseDown={(e) => {
-                e.stopPropagation()
-                e.preventDefault()
-              }}
-              onTouchStart={(e) => {
-                e.stopPropagation()
-                // Note: preventDefault in touch handlers requires non-passive listener
-                // But for a button click, we don't need to prevent default
-              }}
-              className={`pointer-events-auto w-14 h-14 md:w-16 md:h-16 bg-white bg-opacity-90 rounded-full flex items-center justify-center shadow-lg transition-opacity hover:bg-opacity-100 active:scale-95 touch-target ${
-                isPlaying ? 'opacity-0 hover:opacity-100 active:opacity-100' : 'opacity-100'
-              }`}
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-              type="button"
-            >
-              {isPlaying ? (
-                <svg className="w-8 h-8 text-black" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
-                </svg>
-              ) : (
-                <svg className="w-8 h-8 text-black ml-1" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z"/>
-                </svg>
-              )}
-            </button>
-          </div>
-        )}
-        <svg
-          ref={svgRef}
-          className={
-            isImageMode
-              ? 'absolute pointer-events-auto'
-              : 'absolute inset-0 w-full h-full pointer-events-auto'
-          }
-          width={dimensions.width || 1}
-          height={dimensions.height || 1}
-          viewBox={`0 0 ${dimensions.width || 1} ${dimensions.height || 1}`}
-          style={{
-            zIndex: 5,
-            pointerEvents: filterAnnotationsByTime ? 'none' : 'auto',
-            ...(isImageMode
-              ? {
-                  left: '50%',
-                  top: '50%',
-                  transform: 'translate(-50%, -50%)',
-                  width: dimensions.width || 1,
-                  height: dimensions.height || 1,
-                }
-              : {}),
-          }}
-          onClick={(e) => {
-            if (filterAnnotationsByTime) return // Disable interaction in public viewer mode
-            // Click on empty space deselects
-            if (e.target === svgRef.current) {
-              onSelectAnnotation(null)
-            }
-          }}
-        >
-          {/* Shared defs: drop shadow for arrow image */}
-          <defs>
-            <filter id="arrow-drop-shadow" x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx={0} dy={2} stdDeviation={3} floodColor="rgba(0,0,0,0.5)" floodOpacity={1} />
-            </filter>
-          </defs>
-          {dimensions.width > 0 && dimensions.height > 0 && visibleAnnotations.map((ann) => {
-            const x = normToPixel(ann.x, dimensions.width)
-            const y = normToPixel(ann.y, dimensions.height)
-            const isSelected = ann.id === selectedAnnotationId
-
-            if (ann.kind === 'arrow') {
-              const angle = ann.angle ?? 0
-              const sizeMult = (ann.style?.strokeWidth ?? 35) / 35 // Scale with toolbar "Arrow size" (default 35)
-              const baseLength = Math.min(dimensions.width, dimensions.height) * 0.28
-              const length = Math.max(120, baseLength) * sizeMult
-              const rad = (angle * Math.PI) / 180
-              const endX = Math.cos(rad) * length
-              const endY = Math.sin(rad) * length
-              // PNG visual tip is ~88% along (image may have right padding); put rotate handle there
-              const tipRatio = 0.88
-              const tipX = Math.cos(rad) * length * tipRatio
-              const tipY = Math.sin(rad) * length * tipRatio
-              const arrowHeight = length * 0.28
-
-              return (
-                <g
-                  key={ann.id}
-                  transform={`translate(${x}, ${y})`}
-                  filter="url(#arrow-drop-shadow)"
-                  onMouseDown={(e) => handleAnnotationMouseDown(e, ann.id)}
-                  onTouchStart={(e) => handleAnnotationMouseDown(e, ann.id)}
-                  style={{ cursor: 'move' }}
-                >
-                  {/* Invisible wide hit area for easier touch/drag */}
-                  <line
-                    x1={0}
-                    y1={0}
-                    x2={endX}
-                    y2={endY}
-                    stroke="transparent"
-                    strokeWidth={32}
-                    pointerEvents="stroke"
-                  />
-                  {/* Arrow: PNG image (tail at origin, pointing right); rotated to match angle */}
-                  <image
-                    href="/88c94d22-6a88-414e-b516-3703d91d3f46.png"
-                    x={0}
-                    y={-arrowHeight / 2}
-                    width={length}
-                    height={arrowHeight}
-                    preserveAspectRatio="xMinYMid meet"
-                    transform={`rotate(${angle})`}
-                  />
-                  
-                  {/* Rotate handle at arrow tip (visual tip, not image edge) */}
-                  {isSelected && !filterAnnotationsByTime && (
-                    <g
-                      transform={`translate(${tipX}, ${tipY})`}
-                      onMouseDown={(e) => {
-                        e.stopPropagation()
-                        handleRotateMouseDown(e, ann.id)
-                      }}
-                      onTouchStart={(e) => {
-                        e.stopPropagation()
-                        handleRotateMouseDown(e, ann.id)
-                      }}
-                      style={{ cursor: 'grab' }}
-                    >
-                      <circle
-                        cx={0}
-                        cy={0}
-                        r={12}
-                        fill="#ffffff"
-                        stroke="#000000"
-                        strokeWidth={2}
-                        opacity={0.8}
-                      />
-                      <text
-                        x={0}
-                        y={0}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        fontSize={16}
-                        fill="#000000"
-                      >
-                        🔄
-                      </text>
-                    </g>
-                  )}
-                </g>
-              )
-            } else {
-              // Label (supports multi-line via \n)
-              const color = isSelected ? '#ff0000' : ann.style?.color || '#ffffff'
-              const fontSize = ann.style?.fontSize || 28
-              const rawText = ann.text || 'Label'
-              const lines = rawText.split('\n')
-              const lineHeight = fontSize * 1.2
-              const charWidth = fontSize * 0.55
-              const maxLineLen = Math.max(...lines.map((l) => l.length), 1)
-              const blockWidth = maxLineLen * charWidth
-              const blockHeight = lines.length * lineHeight + 12
-
-              return (
-                <g
-                  key={ann.id}
-                  transform={`translate(${x}, ${y})`}
-                  onMouseDown={filterAnnotationsByTime ? undefined : (e) => handleAnnotationMouseDown(e, ann.id)}
-                  onTouchStart={filterAnnotationsByTime ? undefined : (e) => handleAnnotationMouseDown(e, ann.id)}
-                  style={{ cursor: filterAnnotationsByTime ? 'default' : 'move', pointerEvents: filterAnnotationsByTime ? 'none' : 'auto' }}
-                >
-                  {/* Text background */}
-                  <rect
-                    x={-blockWidth / 2}
-                    y={-blockHeight / 2}
-                    width={blockWidth}
-                    height={blockHeight}
-                    fill={isSelected ? 'rgba(255, 0, 0, 0.2)' : 'rgba(0, 0, 0, 0.5)'}
-                    rx={4}
-                  />
-                  {/* Text (multi-line) */}
-                  <text
-                    x={0}
-                    y={-(lines.length - 1) * (lineHeight / 2)}
-                    textAnchor="middle"
-                    fontSize={fontSize}
-                    fill={color}
-                    stroke={isSelected ? '#ff0000' : '#000000'}
-                    strokeWidth={2}
-                    paintOrder="stroke"
-                  >
-                    {lines.map((line, i) => (
-                      <tspan key={i} x={0} dy={i === 0 ? 0 : lineHeight}>
-                        {line || ' '}
-                      </tspan>
-                    ))}
-                  </text>
-                </g>
-              )
-            }
-          })}
-        </svg>
       </div>
     </div>
   )

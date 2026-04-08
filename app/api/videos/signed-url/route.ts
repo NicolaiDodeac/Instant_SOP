@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
 import { createClientServer } from '@/lib/supabase/server'
-import { getIsSuperUser, presignGetForVideoPath } from '@/lib/presign-video-path'
+import { presignGetForVideoPath } from '@/lib/presign-video-path'
 
 export async function GET(request: NextRequest) {
   try {
@@ -21,7 +22,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const isSuperUser = await getIsSuperUser(supabase, user.id)
+    const isSuperUser = await resolveIsSuperUser(supabase, user.id)
     const result = await presignGetForVideoPath(supabase, user.id, isSuperUser, path)
 
     if (!result.ok) {

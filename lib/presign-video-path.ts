@@ -1,19 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { headObjectExists, presignGetObject } from '@/lib/r2'
-import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 
 export type PresignPathResult =
   | { ok: true; url: string }
   | { ok: false; status: number; error: string }
-
-export async function getIsSuperUser(supabase: SupabaseClient, userId: string): Promise<boolean> {
-  const { data: superRow } = await supabase
-    .from('super_users')
-    .select('user_id')
-    .eq('user_id', userId)
-    .maybeSingle()
-  return !!superRow || isSuperUserIdFromEnv(userId)
-}
 
 /**
  * Same access rules as GET /api/videos/signed-url — used by batch and single routes.

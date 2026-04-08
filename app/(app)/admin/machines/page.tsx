@@ -50,7 +50,6 @@ export default function AdminMachinesPage() {
   const [addError, setAddError] = useState<string | null>(null)
 
   /** New machine category (family). */
-  const [catCode, setCatCode] = useState('')
   const [catName, setCatName] = useState('')
   const [catSupplier, setCatSupplier] = useState('')
   const [catUsesHmi, setCatUsesHmi] = useState(false)
@@ -207,7 +206,7 @@ export default function AdminMachinesPage() {
 
   async function handleCreateCategory(e: React.FormEvent) {
     e.preventDefault()
-    if (!catCode.trim() || !catName.trim()) return
+    if (!catName.trim()) return
 
     setCreatingCategory(true)
     setCreateCategoryError(null)
@@ -216,7 +215,6 @@ export default function AdminMachinesPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          code: catCode.trim(),
           name: catName.trim(),
           supplier: catSupplier.trim() || null,
           uses_hmi_station_codes: catUsesHmi,
@@ -233,7 +231,6 @@ export default function AdminMachinesPage() {
         setEditingFamilyName(inserted.name)
         setEditingFamilySupplier(typeof inserted.supplier === 'string' ? inserted.supplier : '')
       }
-      setCatCode('')
       setCatName('')
       setCatSupplier('')
       setCatUsesHmi(false)
@@ -752,26 +749,6 @@ export default function AdminMachinesPage() {
             <form onSubmit={handleCreateCategory} className="space-y-3">
               <label className="block">
                 <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Type code <span className="font-normal text-gray-500">(unique)</span>
-                </span>
-                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                  Stable ID, e.g. WRAPPER_VENDOR_X — spaces become underscores; stored uppercase.
-                </p>
-                <input
-                  type="text"
-                  value={catCode}
-                  onChange={(e) => {
-                    setCatCode(e.target.value)
-                    setCreateCategoryError(null)
-                  }}
-                  placeholder="e.g. WRAPPER_ACME"
-                  className="mt-1 w-full px-3 py-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-base font-mono"
-                  required
-                  autoComplete="off"
-                />
-              </label>
-              <label className="block">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                   Display name
                 </span>
                 <input
@@ -814,7 +791,7 @@ export default function AdminMachinesPage() {
               </label>
               <button
                 type="submit"
-                disabled={creatingCategory || !catCode.trim() || !catName.trim()}
+                disabled={creatingCategory || !catName.trim()}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-3 rounded-lg touch-target font-medium disabled:opacity-50"
               >
                 {creatingCategory ? 'Creating…' : 'Create machine'}
@@ -830,7 +807,7 @@ export default function AdminMachinesPage() {
               </h3>
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Catalog entries used when you <strong className="font-medium">Add machine</strong> to
-                a line. Type code cannot be changed here.
+                a line.
               </p>
               {familyListError && (
                 <p className="text-sm text-red-600 dark:text-red-400">{familyListError}</p>
@@ -860,9 +837,6 @@ export default function AdminMachinesPage() {
                               placeholder="Supplier (optional)"
                               className="w-full sm:max-w-md px-2 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
                             />
-                            <p className="text-xs font-mono text-gray-500 dark:text-gray-400">
-                              {fam.code}
-                            </p>
                             <div className="flex flex-wrap gap-2">
                               <button
                                 type="button"
@@ -1077,9 +1051,6 @@ export default function AdminMachinesPage() {
                             >
                               {formatMachineFamilyLabel(fam)}
                             </button>
-                            <p className="text-xs font-mono text-gray-500 dark:text-gray-400">
-                              {fam.code}
-                            </p>
                           </div>
                           <button
                             type="button"

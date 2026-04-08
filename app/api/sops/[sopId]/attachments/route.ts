@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
-import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 
 type Attachments = {
   trainingModuleIds: string[]
@@ -9,17 +9,6 @@ type Attachments = {
   lineIds: string[]
   lineLegIds: string[]
   machineIds: string[]
-}
-
-async function isSuperUser(service: ReturnType<typeof createServiceRoleClient>, userId: string): Promise<boolean> {
-  try {
-    const { data } = await service.from('super_users').select('user_id').eq('user_id', userId).maybeSingle()
-    if (data) return true
-  } catch {
-    // ignore
-  }
-  if (isSuperUserIdFromEnv(userId)) return true
-  return false
 }
 
 export async function GET(
@@ -105,7 +94,7 @@ export async function PUT(
     if (!sop) return NextResponse.json({ error: 'SOP not found' }, { status: 404 })
 
     const ownerId = String((sop as any).owner)
-    const superUser = await isSuperUser(service, user.id)
+    const superUser = await resolveIsSuperUser(service, user.id)
     const canEdit = ownerId === user.id || superUser
     if (!canEdit) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

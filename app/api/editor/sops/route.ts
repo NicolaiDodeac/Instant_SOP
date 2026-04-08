@@ -1,34 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import {
+  buildSopListTitleSearchFilter,
+  parseSopListPageParams,
+  slicePageWithHasMore,
+} from '@/features/sops/server/sop-list-query'
+import { resolveEditorFlags } from '@/lib/auth/resolve-editor-flags'
 import { createClientServer } from '@/lib/supabase/server'
-import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 import type { SOP } from '@/lib/types'
-
-const MAX_LIMIT = 50
-const DEFAULT_LIMIT = 30
-
-async function resolveEditorFlags(supabase: SupabaseClient, userId: string) {
-  const { data: editorRow } = await supabase
-    .from('allowed_editors')
-    .select('user_id')
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  let isSuperUser = false
-  try {
-    const { data: superUserRow } = await supabase
-      .from('super_users')
-      .select('user_id')
-      .eq('user_id', userId)
-      .maybeSingle()
-    isSuperUser = !!superUserRow
-  } catch {
-    // super_users table may not exist yet
-  }
-  if (isSuperUserIdFromEnv(userId)) isSuperUser = true
-  const isEditor = !!editorRow || isSuperUser
-  return { isEditor, isSuperUser }
-}
 
 export async function GET(request: NextRequest) {
   try {
@@ -47,12 +25,8 @@ export async function GET(request: NextRequest) {
     }
 
     const url = request.nextUrl
-    const limit = Math.min(
-      MAX_LIMIT,
-      Math.max(1, parseInt(url.searchParams.get('limit') || String(DEFAULT_LIMIT), 10) || DEFAULT_LIMIT)
-    )
-    const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0)
-    const q = (url.searchParams.get('q') || '').trim()
+    const { limit, offset, q } = parseSopListPageParams(url.searchParams)
+    const titleSearch = buildSopListTitleSearchFilter(q)
 
     let query = supabase.from('sops').select('*')
 
@@ -60,15 +34,12 @@ export async function GET(request: NextRequest) {
       query = query.eq('owner', user.id)
     }
 
-    if (q) {
-      const esc = q.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
-      const pattern = `%${esc}%`
-      if (/^\d+$/.test(q)) {
-        const n = parseInt(q, 10)
-        query = query.or(`title.ilike.${pattern},sop_number.eq.${n}`)
-      } else {
-        query = query.ilike('title', pattern)
-      }
+    if (titleSearch.kind === 'title_ilike') {
+      query = query.ilike('title', titleSearch.pattern)
+    } else if (titleSearch.kind === 'title_or_sop_number') {
+      query = query.or(
+        `title.ilike.${titleSearch.pattern},sop_number.eq.${titleSearch.sopNumber}`
+      )
     }
 
     const fetchCount = limit + 1
@@ -83,8 +54,7 @@ export async function GET(request: NextRequest) {
     }
 
     const rows = (data ?? []) as SOP[]
-    const hasMore = rows.length > limit
-    const items = hasMore ? rows.slice(0, limit) : rows
+    const { items, hasMore } = slicePageWithHasMore(rows, limit)
 
     let totalSops: number | undefined
     if (offset === 0) {

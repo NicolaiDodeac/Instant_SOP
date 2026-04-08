@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
-import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 
 /** POST: create a step_annotations row. Uses server auth + ownership/super-user check, then service-role insert so RLS is not blocking. */
 export async function POST(request: NextRequest) {
@@ -59,12 +59,7 @@ export async function POST(request: NextRequest) {
       .single()
 
     const isOwner = sop?.owner === user.id
-    const { data: superRow } = await service
-      .from('super_users')
-      .select('user_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-    const isSuperUser = !!superRow || isSuperUserIdFromEnv(user.id)
+    const isSuperUser = await resolveIsSuperUser(service, user.id)
 
     if (!isOwner && !isSuperUser) {
       return NextResponse.json(

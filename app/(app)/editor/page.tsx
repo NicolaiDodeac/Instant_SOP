@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
@@ -8,21 +8,18 @@ import { formatSopListDate } from '@/lib/format-date'
 import type { SOP } from '@/lib/types'
 import { listDrafts, deleteDraft } from '@/lib/idb'
 import type { DraftSOP } from '@/lib/types'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { usePaginatedList } from '@/features/sops/hooks/usePaginatedList'
+import { fetchEditorSopsPage } from '@/features/sops/services/sop-lists'
 
 /** DB SOP ids are UUIDs; local-only drafts may use nanoid and must stay visible to non–super-users. */
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-const PAGE_SIZE = 30
-
 export default function EditorListPage() {
   const router = useRouter()
   const supabase = useSupabaseClient()
-  const [sops, setSops] = useState<SOP[]>([])
   const [drafts, setDrafts] = useState<DraftSOP[]>([])
   const [loading, setLoading] = useState(true)
-  const [listLoading, setListLoading] = useState(false)
-  const [loadingMore, setLoadingMore] = useState(false)
-  const [hasMore, setHasMore] = useState(true)
   const [ownedSopIds, setOwnedSopIds] = useState<Set<string>>(() => new Set())
   const [isEditor, setIsEditor] = useState<boolean | null>(null)
   const [isSuperUser, setIsSuperUser] = useState(false)
@@ -32,18 +29,31 @@ export default function EditorListPage() {
   const [createError, setCreateError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const listFetchGen = useRef(0)
-  const sentinelRef = useRef<HTMLDivElement | null>(null)
+  const debouncedSearch = useDebouncedValue(search.trim(), 300)
+
+  const fetchEditorPage = useCallback(
+    (offset: number) =>
+      fetchEditorSopsPage({ offset, q: debouncedSearch || undefined }),
+    [debouncedSearch]
+  )
+
+  const {
+    items: sops,
+    setItems: setSops,
+    hasMore,
+    initialLoading: listLoading,
+    loadingMore,
+    sentinelRef,
+  } = usePaginatedList<SOP>({
+    fetchPage: fetchEditorPage,
+    enabled: isEditor === true,
+    reloadKey: debouncedSearch,
+    initialLoading: false,
+  })
 
   useEffect(() => {
     loadMe()
   }, [])
-
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
-    return () => clearTimeout(t)
-  }, [search])
 
   useEffect(() => {
     if (isEditor) {
@@ -62,79 +72,6 @@ export default function EditorListPage() {
       setOwnedSopIds(new Set((data ?? []).map((r: { id: string }) => r.id)))
     })()
   }, [isEditor, isSuperUser, supabase])
-
-  const fetchEditorPage = useCallback(async (offset: number) => {
-    const params = new URLSearchParams({
-      limit: String(PAGE_SIZE),
-      offset: String(offset),
-    })
-    if (debouncedSearch) params.set('q', debouncedSearch)
-    const res = await fetch(`/api/editor/sops?${params}`)
-    if (!res.ok) {
-      throw new Error('Failed to load SOPs')
-    }
-    return (await res.json()) as { items: SOP[]; hasMore: boolean; totalSops?: number }
-  }, [debouncedSearch])
-
-  useEffect(() => {
-    if (!isEditor) return
-
-    let cancelled = false
-    const gen = ++listFetchGen.current
-
-    void (async () => {
-      setListLoading(true)
-      setHasMore(true)
-      setSops([])
-      try {
-        const body = await fetchEditorPage(0)
-        if (cancelled || listFetchGen.current !== gen) return
-        setSops(body.items)
-        setHasMore(body.hasMore)
-      } catch {
-        if (!cancelled && listFetchGen.current === gen) {
-          setSops([])
-          setHasMore(false)
-        }
-      } finally {
-        if (!cancelled && listFetchGen.current === gen) setListLoading(false)
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [isEditor, debouncedSearch, fetchEditorPage])
-
-  const loadMore = useCallback(async () => {
-    if (!hasMore || listLoading || loadingMore) return
-    const genAtStart = listFetchGen.current
-    setLoadingMore(true)
-    try {
-      const body = await fetchEditorPage(sops.length)
-      if (listFetchGen.current !== genAtStart) return
-      setSops((prev) => [...prev, ...body.items])
-      setHasMore(body.hasMore)
-    } catch {
-      // keep list
-    } finally {
-      if (listFetchGen.current === genAtStart) setLoadingMore(false)
-    }
-  }, [fetchEditorPage, hasMore, listLoading, loadingMore, sops.length])
-
-  useEffect(() => {
-    const el = sentinelRef.current
-    if (!el || listLoading || !hasMore || !isEditor) return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) void loadMore()
-      },
-      { root: null, rootMargin: '240px', threshold: 0 }
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [hasMore, isEditor, listLoading, loadMore, sops.length])
 
   const visibleDrafts = useMemo(() => {
     if (isSuperUser) return drafts

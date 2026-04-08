@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
+import { resolveEditorFlags } from '@/lib/auth/resolve-editor-flags'
 import { createClientServer } from '@/lib/supabase/server'
-import { isSuperUserIdFromEnv } from '@/lib/super-user-env'
 
 export async function GET() {
   try {
@@ -14,25 +14,7 @@ export async function GET() {
       return NextResponse.json({ user: null, isEditor: false })
     }
 
-    const { data: editorRow } = await supabase
-      .from('allowed_editors')
-      .select('user_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-
-    let isSuperUser = false
-    try {
-      const { data: superUserRow } = await supabase
-        .from('super_users')
-        .select('user_id')
-        .eq('user_id', user.id)
-        .maybeSingle()
-      isSuperUser = !!superUserRow
-    } catch {
-      // super_users table may not exist yet if migration not run
-    }
-    if (isSuperUserIdFromEnv(user.id)) isSuperUser = true
-    const isEditor = !!editorRow || isSuperUser
+    const { isEditor, isSuperUser } = await resolveEditorFlags(supabase, user.id)
 
     return NextResponse.json({
       user: {

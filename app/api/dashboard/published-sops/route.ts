@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+import {
+  buildSopListTitleSearchFilter,
+  parseSopListPageParams,
+  slicePageWithHasMore,
+} from '@/features/sops/server/sop-list-query'
 import { createClientServer } from '@/lib/supabase/server'
 import type { SOP } from '@/lib/types'
-
-const MAX_LIMIT = 50
-const DEFAULT_LIMIT = 30
 
 const SOP_COLUMNS =
   'id, title, description, owner, published, share_slug, created_at, updated_at, last_edited_by, sop_number'
@@ -25,13 +27,9 @@ export async function GET(request: NextRequest) {
     }
 
     const url = request.nextUrl
-    const limit = Math.min(
-      MAX_LIMIT,
-      Math.max(1, parseInt(url.searchParams.get('limit') || String(DEFAULT_LIMIT), 10) || DEFAULT_LIMIT)
-    )
-    const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0)
-    const q = (url.searchParams.get('q') || '').trim()
+    const { limit, offset, q } = parseSopListPageParams(url.searchParams)
     const trainingModuleId = (url.searchParams.get('trainingModuleId') || '').trim()
+    const titleSearch = buildSopListTitleSearchFilter(q)
 
     const selectCols = trainingModuleId
       ? `${SOP_COLUMNS}, sop_training_modules!inner(training_module_id)`
@@ -48,15 +46,12 @@ export async function GET(request: NextRequest) {
       query = query.eq('sop_training_modules.training_module_id', trainingModuleId)
     }
 
-    if (q) {
-      const esc = q.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
-      const pattern = `%${esc}%`
-      if (/^\d+$/.test(q)) {
-        const n = parseInt(q, 10)
-        query = query.or(`title.ilike.${pattern},sop_number.eq.${n}`)
-      } else {
-        query = query.ilike('title', pattern)
-      }
+    if (titleSearch.kind === 'title_ilike') {
+      query = query.ilike('title', titleSearch.pattern)
+    } else if (titleSearch.kind === 'title_or_sop_number') {
+      query = query.or(
+        `title.ilike.${titleSearch.pattern},sop_number.eq.${titleSearch.sopNumber}`
+      )
     }
 
     const fetchCount = limit + 1
@@ -71,8 +66,7 @@ export async function GET(request: NextRequest) {
     }
 
     const rows = (data ?? []) as unknown[]
-    const hasMore = rows.length > limit
-    const slice = hasMore ? rows.slice(0, limit) : rows
+    const { items: slice, hasMore } = slicePageWithHasMore(rows, limit)
     const items = slice.map((row) =>
       stripTrainingModules(row as Record<string, unknown>)
     )

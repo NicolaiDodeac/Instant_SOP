@@ -6,6 +6,10 @@ import Link from 'next/link'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import { formatSopListDate } from '@/lib/format-date'
 import type { SopAuthorMeta, SOP, TrainingModule } from '@/lib/types'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { usePaginatedList } from '@/features/sops/hooks/usePaginatedList'
+import { fetchPublishedSopsPage } from '@/features/sops/services/sop-lists'
+import { fetchSopAuthorsBatched } from '@/features/sops/services/sop-author'
 import { PwaInstallCard } from '@/components/PwaInstallCard'
 import {
   SopAuthorAvatar,
@@ -34,28 +38,57 @@ function SearchIcon({ className }: { className?: string }) {
   )
 }
 
-const PAGE_SIZE = 30
-
 export default function DashboardClient() {
-  const [sops, setSops] = useState<SOP[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadingMore, setLoadingMore] = useState(false)
-  const [hasMore, setHasMore] = useState(true)
-  const [totalSops, setTotalSops] = useState<number | null>(null)
   const [isEditor, setIsEditor] = useState<boolean | null>(null)
   const [isSuperUser, setIsSuperUser] = useState(false)
   const [sopMeta, setSopMeta] = useState<Record<string, SopAuthorMeta>>({})
   const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const debouncedSearch = useDebouncedValue(search.trim(), 300)
   const [trainingModules, setTrainingModules] = useState<TrainingModule[]>([])
   const [trainingModuleId, setTrainingModuleId] = useState('')
   const [modulePickerOpen, setModulePickerOpen] = useState(false)
   const [moduleQuery, setModuleQuery] = useState('')
   const sopMetaRef = useRef<Record<string, SopAuthorMeta>>({})
-  const listFetchGen = useRef(0)
-  const sentinelRef = useRef<HTMLDivElement | null>(null)
   const router = useRouter()
   const supabase = useSupabaseClient()
+
+  const listReloadKey = useMemo(
+    () => `${debouncedSearch}\0${trainingModuleId}`,
+    [debouncedSearch, trainingModuleId]
+  )
+
+  const fetchPublishedPage = useCallback(
+    (offset: number) =>
+      fetchPublishedSopsPage({
+        offset,
+        q: debouncedSearch || undefined,
+        trainingModuleId: trainingModuleId || undefined,
+      }),
+    [debouncedSearch, trainingModuleId]
+  )
+
+  const canLoadSopList = useCallback(async () => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    return !!user
+  }, [supabase])
+
+  const {
+    items: sops,
+    setItems: setSops,
+    hasMore,
+    initialLoading: loading,
+    loadingMore,
+    totalSops,
+    sentinelRef,
+  } = usePaginatedList<SOP>({
+    fetchPage: fetchPublishedPage,
+    enabled: true,
+    reloadKey: listReloadKey,
+    canLoad: canLoadSopList,
+    initialLoading: true,
+  })
 
   const publishedSopIds = useMemo(
     () => sops.filter((s) => s.published && s.share_slug).map((s) => s.id),
@@ -65,11 +98,6 @@ export default function DashboardClient() {
   useEffect(() => {
     loadMe()
   }, [])
-
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
-    return () => clearTimeout(t)
-  }, [search])
 
   useEffect(() => {
     sopMetaRef.current = sopMeta
@@ -113,29 +141,19 @@ export default function DashboardClient() {
     const missing = [...new Set(publishedSopIds)].filter((id) => !sopMetaRef.current[id])
     if (missing.length === 0) return
 
-    let cancelled = false
+    const ac = new AbortController()
     void (async () => {
       try {
-        for (let i = 0; i < missing.length; i += 40) {
-          const chunk = missing.slice(i, i + 40)
-          const res = await fetch(
-            `/api/sop-author?sopIds=${encodeURIComponent(chunk.join(','))}`
-          )
-          if (!res.ok) continue
-          const data = (await res.json()) as { authors?: Record<string, SopAuthorMeta> }
-          if (cancelled) return
-          const authors = data.authors ?? {}
-          if (Object.keys(authors).length > 0) {
-            setSopMeta((prev) => ({ ...prev, ...authors }))
-          }
+        const authors = await fetchSopAuthorsBatched(missing, { signal: ac.signal })
+        if (ac.signal.aborted) return
+        if (Object.keys(authors).length > 0) {
+          setSopMeta((prev) => ({ ...prev, ...authors }))
         }
       } catch {
-        // ignore
+        // ignore abort / network
       }
     })()
-    return () => {
-      cancelled = true
-    }
+    return () => ac.abort()
   }, [publishedSopIds])
 
   async function loadMe() {
@@ -149,102 +167,6 @@ export default function DashboardClient() {
       setIsSuperUser(false)
     }
   }
-
-  const fetchPublishedPage = useCallback(
-    async (offset: number) => {
-      const params = new URLSearchParams({
-        limit: String(PAGE_SIZE),
-        offset: String(offset),
-      })
-      if (debouncedSearch) params.set('q', debouncedSearch)
-      if (trainingModuleId) params.set('trainingModuleId', trainingModuleId)
-
-      const res = await fetch(`/api/dashboard/published-sops?${params}`)
-      if (!res.ok) {
-        throw new Error('Failed to load SOPs')
-      }
-      return (await res.json()) as {
-        items: SOP[]
-        hasMore: boolean
-        totalSops?: number
-      }
-    },
-    [debouncedSearch, trainingModuleId]
-  )
-
-  useEffect(() => {
-    let cancelled = false
-    const gen = ++listFetchGen.current
-
-    void (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-      if (!user) {
-        setLoading(false)
-        setSops([])
-        setHasMore(false)
-        return
-      }
-
-      setLoading(true)
-      setHasMore(true)
-      setSops([])
-      try {
-        const body = await fetchPublishedPage(0)
-        if (cancelled || listFetchGen.current !== gen) return
-        setSops(body.items)
-        setHasMore(body.hasMore)
-        if (body.totalSops != null) setTotalSops(body.totalSops)
-      } catch {
-        if (!cancelled && listFetchGen.current === gen) {
-          setSops([])
-          setHasMore(false)
-        }
-      } finally {
-        if (!cancelled && listFetchGen.current === gen) setLoading(false)
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [debouncedSearch, trainingModuleId, supabase, fetchPublishedPage])
-
-  const loadMore = useCallback(async () => {
-    if (!hasMore || loading || loadingMore) return
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return
-
-    const genAtStart = listFetchGen.current
-    setLoadingMore(true)
-    try {
-      const body = await fetchPublishedPage(sops.length)
-      if (listFetchGen.current !== genAtStart) return
-      setSops((prev) => [...prev, ...body.items])
-      setHasMore(body.hasMore)
-    } catch {
-      // keep existing list
-    } finally {
-      if (listFetchGen.current === genAtStart) setLoadingMore(false)
-    }
-  }, [fetchPublishedPage, hasMore, loading, loadingMore, sops.length, supabase])
-
-  useEffect(() => {
-    const el = sentinelRef.current
-    if (!el || loading || !hasMore) return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) void loadMore()
-      },
-      { root: null, rootMargin: '240px', threshold: 0 }
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [hasMore, loadMore, loading, sops.length])
 
   async function handleSignOut() {
     await supabase.auth.signOut()

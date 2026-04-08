@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { saveVideoBlob, saveImageBlob } from '@/lib/idb'
+import { getVideoDisplayAspectRatio } from '@/lib/video-display-aspect'
 import ImageCropModal from '@/components/ImageCropModal'
 
 interface VideoCaptureProps {
@@ -33,6 +34,7 @@ export default function VideoCapture({
   const [imageCrop, setImageCrop] = useState<{ url: string; mime: string } | null>(null)
   /** Matches camera / preview frame so SD or landscape fallbacks are not forced into a 9:16 box. */
   const [previewAspect, setPreviewAspect] = useState<number | null>(null)
+  const previewRvfcRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     return () => {
@@ -41,6 +43,15 @@ export default function VideoCapture({
       }
       if (mediaRecorderRef.current?.state === 'recording') {
         mediaRecorderRef.current.stop()
+      }
+      const el = videoRef.current
+      if (el && previewRvfcRef.current !== undefined) {
+        try {
+          el.cancelVideoFrameCallback(previewRvfcRef.current)
+        } catch {
+          // ignore
+        }
+        previewRvfcRef.current = undefined
       }
     }
   }, [])
@@ -81,15 +92,33 @@ export default function VideoCapture({
 
       if (videoRef.current) {
         const el = videoRef.current
+        const applyPreviewAspect = () => {
+          const r = getVideoDisplayAspectRatio(el)
+          if (r != null) setPreviewAspect(r)
+        }
         const onMeta = () => {
-          const w = el.videoWidth
-          const h = el.videoHeight
-          if (w > 0 && h > 0) {
-            const r = w / h
-            if (Number.isFinite(r) && r > 0.2 && r < 5) setPreviewAspect(r)
-          }
+          applyPreviewAspect()
         }
         el.addEventListener('loadedmetadata', onMeta, { once: true })
+        if (previewRvfcRef.current !== undefined) {
+          try {
+            el.cancelVideoFrameCallback(previewRvfcRef.current)
+          } catch {
+            // ignore
+          }
+          previewRvfcRef.current = undefined
+        }
+        try {
+          previewRvfcRef.current = el.requestVideoFrameCallback(() => {
+            applyPreviewAspect()
+            if (previewRvfcRef.current !== undefined) {
+              el.cancelVideoFrameCallback(previewRvfcRef.current)
+              previewRvfcRef.current = undefined
+            }
+          })
+        } catch {
+          previewRvfcRef.current = undefined
+        }
         el.srcObject = stream
         setPreviewAspect(null)
         void el.play()
@@ -121,7 +150,16 @@ export default function VideoCapture({
         // Stop all tracks
         stream.getTracks().forEach((track) => track.stop())
         if (videoRef.current) {
-          videoRef.current.srcObject = null
+          const vel = videoRef.current
+          if (previewRvfcRef.current !== undefined) {
+            try {
+              vel.cancelVideoFrameCallback(previewRvfcRef.current)
+            } catch {
+              // ignore
+            }
+            previewRvfcRef.current = undefined
+          }
+          vel.srcObject = null
         }
         setPreviewAspect(null)
 

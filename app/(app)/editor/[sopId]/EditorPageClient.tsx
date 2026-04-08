@@ -178,6 +178,9 @@ export default function EditorPageClient({
   const [currentStepId, setCurrentStepId] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
+  /** Resolving GET /api/videos/signed-url for the current step’s video_path (R2). */
+  const [videoSignedUrlResolving, setVideoSignedUrlResolving] = useState(false)
+  const [videoSignedUrlError, setVideoSignedUrlError] = useState<string | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [videoDuration, setVideoDuration] = useState(0) // Track actual video duration from video element
   const [startTime, setStartTime] = useState(0)
@@ -716,15 +719,19 @@ export default function EditorPageClient({
     // Prefer image when present (even if video_path also exists).
     if (step.image_path) {
       setVideoUrl(null)
+      setVideoSignedUrlError(null)
+      setVideoSignedUrlResolving(false)
       loadImageUrl(step.image_path)
     } else if (step.video_path) {
       setImageUrl(null)
-      loadVideoUrl(step.video_path)
+      void loadVideoUrl(step.video_path)
     } else {
       setVideoUrl(null)
       setImageUrl(null)
-      loadLocalVideo()
-      loadLocalImage()
+      setVideoSignedUrlError(null)
+      setVideoSignedUrlResolving(false)
+      void loadLocalVideo()
+      void loadLocalImage()
     }
 
     // Reset time range when switching steps
@@ -825,11 +832,21 @@ export default function EditorPageClient({
   }
 
   async function loadVideoUrl(videoPath: string) {
+    setVideoUrl(null)
+    setVideoSignedUrlError(null)
+    setVideoSignedUrlResolving(true)
     try {
-      const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(videoPath)}`)
+      const res = await fetch(`/api/videos/signed-url?path=${encodeURIComponent(videoPath)}`, {
+        credentials: 'same-origin',
+      })
       if (res.ok) {
-        const { url } = await res.json()
-        setVideoUrl(url)
+        const { url } = (await res.json()) as { url?: string }
+        if (url) {
+          setVideoUrl(url)
+          setVideoSignedUrlError(null)
+        } else {
+          setVideoSignedUrlError('Invalid response from the video link endpoint.')
+        }
       } else {
         const text = await res.text()
         let errorMessage: string
@@ -841,38 +858,58 @@ export default function EditorPageClient({
         }
 
         // If file not found in storage (404/500), try loading from IndexedDB (local draft)
-        const notFound = res.status === 404 || (res.status === 500 && (errorMessage === 'Object not found' || errorMessage.includes('not found')))
+        const notFound =
+          res.status === 404 ||
+          (res.status === 500 &&
+            (errorMessage === 'Object not found' || errorMessage.toLowerCase().includes('not found')))
         if (notFound) {
           if (process.env.NODE_ENV === 'development') {
             console.warn('Video not found in storage, trying IndexedDB:', videoPath)
           }
-          loadLocalVideo()
-        } else if (res.status === 401 || res.status === 403) {
-          // No access (e.g. viewing draft as non-owner); try local draft
-          loadLocalVideo()
-        } else {
-          if (process.env.NODE_ENV === 'development') {
-            console.error('Error loading video URL:', res.status, errorMessage, videoPath)
+          const recovered = await loadLocalVideo()
+          if (!recovered) {
+            setVideoSignedUrlError(
+              'This step’s video is not in storage yet, and there is no local copy in this browser.'
+            )
           }
+        } else if (res.status === 401 || res.status === 403) {
+          const recovered = await loadLocalVideo()
+          if (!recovered) {
+            setVideoSignedUrlError('No permission to load this video, and no local draft was found.')
+          }
+        } else {
+          console.error('Error loading video URL:', res.status, errorMessage, videoPath)
+          setVideoSignedUrlError(
+            res.status === 503
+              ? errorMessage
+              : `Could not load video (${res.status}). ${errorMessage}`
+          )
         }
       }
     } catch (err) {
-      if (process.env.NODE_ENV === 'development') {
-        console.error('Error loading video URL:', err)
+      console.error('Error loading video URL:', err)
+      const recovered = await loadLocalVideo()
+      if (!recovered) {
+        setVideoSignedUrlError(
+          'Network error while requesting the video link. If this only happens on your deployed site, add the same R2_* variables from `.env.local` to Vercel → Settings → Environment Variables.'
+        )
       }
-      // Fallback to IndexedDB on network errors
-      loadLocalVideo()
+    } finally {
+      setVideoSignedUrlResolving(false)
     }
   }
 
-  async function loadLocalVideo() {
-    if (!currentStepId) return
+  /** Returns true if a blob from IndexedDB was applied. */
+  async function loadLocalVideo(): Promise<boolean> {
+    if (!currentStepId) return false
     const blob = await getVideoBlob(currentStepId)
     if (blob) {
       setVideoUrl(URL.createObjectURL(blob))
-    } else {
-      setVideoUrl(null)
+      setVideoSignedUrlError(null)
+      return true
     }
+    setVideoUrl(null)
+    return false
   }
 
   /** R2 object is replaced at same key; clear <video> then reload so Range requests match the new file (avoids 416). */
@@ -3208,27 +3245,37 @@ style: kind === 'arrow'
             )
           ) : (
             <div className="space-y-1">
-              <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
-                <StepPlayer
-                  // Pass both; StepPlayer prefers image when imageUrl is present.
-                  videoUrl={videoUrl}
-                  imageUrl={imageUrl}
-                  annotations={currentAnnotations}
-                  currentTime={currentTime}
-                  startTime={startTime}
-                  endTime={endTime}
-                  onAnnotationUpdate={handleAnnotationUpdate}
-                  onAnnotationDelete={handleAnnotationDelete}
-                  selectedAnnotationId={editingAnnotationId}
-                  onSelectAnnotation={handleSelectAnnotation}
-                  onTimeUpdate={setCurrentTime}
-                  onDurationUpdate={setVideoDuration}
-                  showControls={false}
-                  seekTime={currentTime}
-                  filterAnnotationsByTime={!canEdit}
-                  playbackRate={isVideoPreviewSpeedEnabled ? playbackRate : 1}
-                />
-              </div>
+              {currentStep.video_path && !currentStep.image_path && videoSignedUrlResolving ? (
+                <div className="flex min-h-[200px] w-full items-center justify-center rounded-lg bg-black text-sm text-white/80">
+                  Loading video…
+                </div>
+              ) : currentStep.video_path && !currentStep.image_path && !videoUrl && videoSignedUrlError ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-50">
+                  {videoSignedUrlError}
+                </div>
+              ) : (
+                <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
+                  <StepPlayer
+                    // Pass both; StepPlayer prefers image when imageUrl is present.
+                    videoUrl={videoUrl}
+                    imageUrl={imageUrl}
+                    annotations={currentAnnotations}
+                    currentTime={currentTime}
+                    startTime={startTime}
+                    endTime={endTime}
+                    onAnnotationUpdate={handleAnnotationUpdate}
+                    onAnnotationDelete={handleAnnotationDelete}
+                    selectedAnnotationId={editingAnnotationId}
+                    onSelectAnnotation={handleSelectAnnotation}
+                    onTimeUpdate={setCurrentTime}
+                    onDurationUpdate={setVideoDuration}
+                    showControls={false}
+                    seekTime={currentTime}
+                    filterAnnotationsByTime={!canEdit}
+                    playbackRate={isVideoPreviewSpeedEnabled ? playbackRate : 1}
+                  />
+                </div>
+              )}
               {hasEditorMedia && canEdit && (
                   <div className="w-[calc(100%+1rem)] max-w-[100vw] -mx-2 px-2 md:w-full md:mx-0 md:max-w-none md:px-0 space-y-1.5">
                     <div className="flex w-full items-stretch justify-between gap-1.5 sm:gap-2">

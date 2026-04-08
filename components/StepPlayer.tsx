@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import type { StepAnnotation } from '@/lib/types'
+import { getVideoDisplayAspectRatio } from '@/lib/video-display-aspect'
 
 interface StepPlayerProps {
   videoUrl: string | null
@@ -195,16 +196,13 @@ export default function StepPlayer({
       }
     }
 
+    const applyDisplayAspect = () => {
+      const r = getVideoDisplayAspectRatio(video)
+      if (r != null) setVideoDisplayAspect(r)
+    }
+
     const handleLoadedMetadata = () => {
-      const vw = video.videoWidth
-      const vh = video.videoHeight
-      if (vw > 0 && vh > 0) {
-        const r = vw / vh
-        // Ignore absurd values from bad metadata
-        if (Number.isFinite(r) && r > 0.2 && r < 5) {
-          setVideoDisplayAspect(r)
-        }
-      }
+      applyDisplayAspect()
       // Video metadata loaded - duration is now available
       if (video.duration && onDurationUpdate) {
         const durationMs = Math.round(video.duration * 1000)
@@ -241,7 +239,27 @@ export default function StepPlayer({
     video.addEventListener('loadeddata', handleLoadedData)
     video.addEventListener('error', handleVideoError)
 
+    let rvfcHandle: number | undefined
+    try {
+      rvfcHandle = video.requestVideoFrameCallback(() => {
+        applyDisplayAspect()
+        if (rvfcHandle !== undefined) {
+          video.cancelVideoFrameCallback(rvfcHandle)
+          rvfcHandle = undefined
+        }
+      })
+    } catch {
+      rvfcHandle = undefined
+    }
+
     return () => {
+      if (rvfcHandle !== undefined) {
+        try {
+          video.cancelVideoFrameCallback(rvfcHandle)
+        } catch {
+          // ignore
+        }
+      }
       video.removeEventListener('timeupdate', handleTimeUpdate)
       video.removeEventListener('play', handlePlay)
       video.removeEventListener('pause', handlePause)

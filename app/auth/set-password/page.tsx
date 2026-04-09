@@ -49,14 +49,14 @@ export default function SetPasswordPage() {
 
   if (checking) {
     return (
-      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom p-4">
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right py-6">
         <p className="text-gray-500">Loading...</p>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right p-4">
+    <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right py-6">
       <div className="w-full max-w-md">
         <h1 className="text-2xl font-bold mb-2">Set new password</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">

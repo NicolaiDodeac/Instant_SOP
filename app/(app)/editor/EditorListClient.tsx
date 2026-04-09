@@ -138,7 +138,7 @@ export default function EditorListClient({
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right pb-24 md:pb-4 safe-bottom bg-gray-50 dark:bg-gray-900">
       <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-        <div className="flex gap-3 p-4 min-h-[44px]">
+        <div className="flex gap-3 py-3 min-h-[44px]">
           <Link
             href="/dashboard"
             className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
@@ -150,7 +150,7 @@ export default function EditorListClient({
         </div>
       </div>
 
-      <div className="p-4 space-y-4">
+      <div className="space-y-4 py-3 pb-4">
         <div>
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-lg font-semibold">New SOP</h2>

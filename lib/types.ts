@@ -152,11 +152,33 @@ export interface SOPStep {
   sop_id: string
   idx: number
   title: string
+  kind?: 'media' | 'text'
   instructions?: string
   video_path?: string
   thumbnail_path?: string
   image_path?: string
+  text_payload?: TextStepPayload | null
   duration_ms?: number
+}
+
+export type TextStepPayload = {
+  /** Optional: If unset, default to blurred Magna background. */
+  background?: {
+    kind: 'image'
+    src: string
+    /** CSS background-size */
+    fit?: 'contain' | 'cover'
+    blurPx?: number
+    overlayOpacity?: number
+  }
+  title?: string
+  bullets?: string[]
+  /** px */
+  titleSize?: number
+  /** px */
+  bulletSize?: number
+  /** px gap between bullet rows */
+  rowGap?: number
 }
 
 export interface StepAnnotation {
@@ -190,11 +212,13 @@ export interface DraftStep {
   id: string
   idx: number
   title: string
+  kind?: 'media' | 'text'
   instructions?: string
   videoBlob?: Blob
   videoPath?: string
   thumbnailPath?: string
   imagePath?: string
+  text_payload?: TextStepPayload | null
   duration_ms?: number
   annotations: StepAnnotation[]
   uploadStatus?: 'pending' | 'compressing' | 'uploading' | 'uploaded' | 'failed'

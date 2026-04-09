@@ -39,7 +39,7 @@ export default function ForgotPasswordPage() {
 
   if (sent) {
     return (
-      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right p-4">
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right py-6">
         <div className="w-full max-w-md text-center">
           <h1 className="text-2xl font-bold mb-4">Check your email</h1>
           <p className="text-gray-600 dark:text-gray-400 mb-6">
@@ -69,7 +69,7 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right p-4">
+    <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right py-6">
       <div className="w-full max-w-md">
         <h1 className="text-2xl font-bold mb-2">Reset password</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">

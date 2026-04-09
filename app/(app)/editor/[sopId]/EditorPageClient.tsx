@@ -146,9 +146,16 @@ import TimeBar, { type TimelineDragMode } from '@/components/TimeBar'
 import AnnotToolbar from '@/components/AnnotToolbar'
 import StepPlayer from '@/components/StepPlayer'
 import { SopAuthorSignatureFetch } from '@/components/SopAuthorSignature'
+import TextStepCanvas from '@/components/TextStepCanvas'
+import type { TextStepPayload } from '@/lib/types'
 
 /** Editor-only preview; does not change exported video file. Gated by NEXT_PUBLIC_ENABLE_VIDEO_PREVIEW_SPEED. */
 const VIDEO_PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4, 8] as const
+
+/** When true (set `NEXT_PUBLIC_DISABLE_VIDEO_COMPRESSION=1` in `.env.local`), uploads the raw blob and skips Mediabunny. */
+const DISABLE_VIDEO_COMPRESSION =
+  process.env.NEXT_PUBLIC_DISABLE_VIDEO_COMPRESSION === '1' ||
+  process.env.NEXT_PUBLIC_DISABLE_VIDEO_COMPRESSION === 'true'
 
 /** Server-side segment speed change (ffmpeg); encoded into the file. Below 1 = slow, above 1 = fast. */
 const SEGMENT_SPEED_FACTORS = [0.5, 2, 3, 4, 8] as const
@@ -593,10 +600,12 @@ export default function EditorPageClient({
             sop_id: sopId,
             idx: s.idx,
             title: s.title,
+            kind: s.kind ?? 'media',
             instructions: s.instructions,
             video_path: s.videoPath,
             thumbnail_path: s.thumbnailPath,
             image_path: s.imagePath,
+            text_payload: s.text_payload ?? null,
             duration_ms: s.duration_ms,
           }))
           setSteps(draftSteps)
@@ -637,10 +646,12 @@ export default function EditorPageClient({
           sop_id: sopId,
           idx: s.idx,
           title: s.title,
+          kind: s.kind ?? 'media',
           instructions: s.instructions,
           video_path: s.videoPath,
           thumbnail_path: s.thumbnailPath,
           image_path: s.imagePath,
+          text_payload: s.text_payload ?? null,
           duration_ms: s.duration_ms,
         }))
         setSteps(draftSteps)
@@ -835,7 +846,10 @@ export default function EditorPageClient({
         }
 
         // If file not found in storage (404/500), try loading from IndexedDB (local draft)
-        const notFound = res.status === 404 || (res.status === 500 && (errorMessage === 'Object not found' || errorMessage.includes('not found')))
+        const notFound =
+          res.status === 404 ||
+          (res.status === 500 &&
+            (errorMessage === 'Object not found' || errorMessage.includes('not found')))
         if (notFound) {
           if (process.env.NODE_ENV === 'development') {
             console.warn('Video not found in storage, trying IndexedDB:', videoPath)
@@ -911,6 +925,7 @@ export default function EditorPageClient({
   const hasEditorMedia =
     !!currentStep &&
     !!(currentStep.video_path || currentStep.image_path || videoUrl || imageUrl)
+  const isTextStep = currentStep?.kind === 'text'
   /** No annotation selection UX while editing cut/speed range on the timeline. */
   const editingAnnotationId =
     cutMode || speedMode ? null : selectedAnnotationId
@@ -1340,24 +1355,47 @@ export default function EditorPageClient({
     if (currentStepId === stepId) {
       loadLocalVideo()
     }
-    setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'compressing' }))
-    setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+    setStepUploadStatus((prev) => ({
+      ...prev,
+      [stepId]: DISABLE_VIDEO_COMPRESSION ? 'uploading' : 'compressing',
+    }))
+    if (!DISABLE_VIDEO_COMPRESSION) {
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+    }
 
     try {
       let videoBlob: Blob
       let usedCompression = false
-      try {
-        videoBlob = await compressVideoWithMediabunny(blob, {
-          onProgress: (p) => {
-            setStepUploadProgress((prev) => ({ ...prev, [stepId]: Math.round(p * 100) }))
-          },
-        })
-        usedCompression = true
-      } catch (err) {
-        if (process.env.NODE_ENV === 'development') {
-          console.warn('Compression skipped:', err)
-        }
+      if (DISABLE_VIDEO_COMPRESSION) {
         videoBlob = blob
+      } else {
+        try {
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[upload]', 'compress start', {
+              nodeEnv: process.env.NODE_ENV,
+              disableCompression: DISABLE_VIDEO_COMPRESSION,
+              inputBytes: blob.size,
+              inputType: blob.type,
+            })
+          }
+          videoBlob = await compressVideoWithMediabunny(blob, {
+            onProgress: (p) => {
+              setStepUploadProgress((prev) => ({ ...prev, [stepId]: Math.round(p * 100) }))
+            },
+          })
+          usedCompression = true
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[upload]', 'compress done', {
+              outputBytes: videoBlob.size,
+              outputType: videoBlob.type,
+            })
+          }
+        } catch (err) {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('Compression skipped:', err)
+          }
+          videoBlob = blob
+        }
       }
 
       setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'uploading' }))
@@ -1473,6 +1511,7 @@ export default function EditorPageClient({
       sop_id: sopId,
       idx: newIdx,
       title: `Step ${newIdx + 1}`,
+      kind: 'media',
     }
 
     if (editAsDraft) {
@@ -1489,6 +1528,7 @@ export default function EditorPageClient({
           id: newStepId,
           idx: newIdx,
           title: `Step ${newIdx + 1}`,
+          kind: 'media',
           annotations: [],
         })
         await saveDraft({ ...draft, lastModified: Date.now() })
@@ -1500,7 +1540,7 @@ export default function EditorPageClient({
     }
     const { data, error } = await supabase
       .from('sop_steps')
-      .insert({ sop_id: sopId, idx: newIdx, title: newStep.title })
+      .insert({ sop_id: sopId, idx: newIdx, title: newStep.title, kind: 'media' })
       .select()
       .single()
 
@@ -1509,6 +1549,76 @@ export default function EditorPageClient({
       setCurrentStepId(data.id)
       setAnnotations((prev) => ({ ...prev, [data.id]: [] }))
     }
+  }
+
+  function defaultTextPayload(): TextStepPayload {
+    return {
+      background: { kind: 'image', src: '/backgrounds/magna_background.png', fit: 'cover', blurPx: 6, overlayOpacity: 0.72 },
+      title: '',
+      bullets: [''],
+      titleSize: 36,
+      bulletSize: 22,
+      rowGap: 10,
+    }
+  }
+
+  function setCurrentStepPatch(patch: Partial<SOPStep>) {
+    if (!currentStepId) return
+    setSteps((prev) => prev.map((s) => (s.id === currentStepId ? { ...s, ...patch } : s)))
+    if (editAsDraft) setHasUnsavedChanges(true)
+  }
+
+  /**
+   * Persist step fields to Supabase when the row already exists (UUID from DB).
+   * Draft-mode editors skip per-field writes for most fields, but text steps must hit the DB
+   * or they appear to "not save". New steps use nanoid until the first PUT /sync — those
+   * cannot be updated here; user must Save changes / sync.
+   */
+  async function persistSopStepToDb(stepId: string, patch: Record<string, unknown>) {
+    if (isOffline) return
+    if (!isStepIdFromDb(stepId)) return
+    const { error } = await supabase.from('sop_steps').update(patch).eq('id', stepId)
+    if (error) {
+      console.error('sop_steps update failed:', error.message, patch)
+    }
+  }
+
+  async function handleCreateTextPage() {
+    if (!currentStepId) return
+    const step = steps.find((s) => s.id === currentStepId)
+    if (!step) return
+    const nextPayload = (step.text_payload as TextStepPayload | null | undefined) ?? defaultTextPayload()
+    setCurrentStepPatch({
+      kind: 'text',
+      text_payload: nextPayload,
+      // Ensure media fields are cleared for a pure text step.
+      video_path: undefined,
+      thumbnail_path: undefined,
+      image_path: undefined,
+      duration_ms: undefined,
+    })
+    void persistSopStepToDb(currentStepId, {
+      kind: 'text',
+      text_payload: nextPayload,
+      video_path: null,
+      thumbnail_path: null,
+      image_path: null,
+      duration_ms: null,
+    })
+  }
+
+  function handleTextPayloadChange(next: TextStepPayload) {
+    if (!currentStepId) return
+    setSteps((prev) => prev.map((s) => (s.id === currentStepId ? { ...s, text_payload: next } : s)))
+    if (editAsDraft) setHasUnsavedChanges(true)
+  }
+
+  async function handleTextPayloadBlur() {
+    if (!currentStepId) return
+    if (isOffline) return
+    const step = steps.find((s) => s.id === currentStepId)
+    if (!step) return
+    await persistSopStepToDb(currentStepId, { text_payload: step.text_payload ?? null })
   }
 
   async function handleDeleteStep(stepId: string, e?: React.MouseEvent) {
@@ -1820,10 +1930,12 @@ style: kind === 'arrow'
         id: step.id,
         idx: step.idx,
         title: step.title,
+        kind: step.kind ?? 'media',
         instructions: step.instructions,
         videoPath: step.video_path,
         thumbnailPath: step.thumbnail_path,
         imagePath: step.image_path,
+        text_payload: (step.text_payload as TextStepPayload | null | undefined) ?? null,
         duration_ms: step.duration_ms,
         annotations: annotationsToUse[step.id] || [],
       })),
@@ -1845,10 +1957,12 @@ style: kind === 'arrow'
           id: s.id,
           idx: s.idx,
           title: s.title,
+          kind: s.kind ?? 'media',
           instructions: s.instructions ?? null,
           video_path: s.video_path ?? null,
           thumbnail_path: s.thumbnail_path ?? null,
           image_path: s.image_path ?? null,
+          text_payload: (s.text_payload as object | null | undefined) ?? null,
           duration_ms: s.duration_ms ?? null,
         })),
         annotations: Object.fromEntries(
@@ -1899,6 +2013,10 @@ style: kind === 'arrow'
       })
     } catch (err) {
       console.error('Sync failed:', err)
+      const msg = err instanceof Error ? err.message : String(err)
+      alert(
+        `Could not save changes: ${msg}\n\nIf this mentions a missing column, run the latest database migrations (sop_steps.kind and sop_steps.text_payload).`
+      )
       setUpdateStatus('idle')
     }
   }
@@ -2085,7 +2203,7 @@ style: kind === 'arrow'
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom bg-gray-50 dark:bg-gray-900">
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900 py-8">
         <p className="text-gray-600 dark:text-gray-400">Loading...</p>
       </div>
     )
@@ -2093,7 +2211,7 @@ style: kind === 'arrow'
 
   if (!sop) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center safe-top safe-bottom p-4 bg-gray-50 dark:bg-gray-900">
+      <div className="min-h-screen flex flex-col items-center justify-center safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900 py-8">
         <p className="text-gray-600 dark:text-gray-400 mb-4">SOP not found</p>
         <button
           onClick={() => router.push('/dashboard')}
@@ -2108,13 +2226,13 @@ style: kind === 'arrow'
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
       {!canEdit && (
-        <div className="z-10 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 px-2 py-1.5 text-center text-xs text-blue-800 dark:text-blue-200">
+        <div className="z-10 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 py-1.5 text-center text-xs text-blue-800 dark:text-blue-200">
           View only — only the owner or a super user can edit this SOP
         </div>
       )}
       {/* Sticky header - thin */}
       <div className="z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
-        <div className="px-2 py-1.5">
+        <div className="py-2">
           {/* Row 1: actions */}
           <div className="flex items-center gap-2 min-h-[44px]">
             <button
@@ -2229,23 +2347,6 @@ style: kind === 'arrow'
                   })()}
                 </button>
               )}
-              {sop.published && sop.share_slug ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const slug = sop.share_slug as string
-                    const editorReturn = `/editor/${sopId}${
-                      tab === 'routing' ? '?tab=routing' : '?tab=steps'
-                    }`
-                    router.push(
-                      `/sop/${encodeURIComponent(slug)}?returnTo=${encodeURIComponent(editorReturn)}`
-                    )
-                  }}
-                  className="px-1.5 py-1.5 rounded text-xs min-w-[40px] bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                >
-                  View
-                </button>
-              ) : null}
             </div>
           </div>
 
@@ -2284,7 +2385,7 @@ style: kind === 'arrow'
 
       {/* Routing (attachments) panel (editor only) */}
       {canEdit && loadedFromServer && tab === 'routing' && (
-        <div className="px-2 py-2 safe-left safe-right border-b border-gray-200 dark:border-gray-800 bg-white/60 dark:bg-gray-900/60">
+        <div className="py-3 border-b border-gray-200 dark:border-gray-800 bg-white/60 dark:bg-gray-900/60">
           <div className="max-w-3xl mx-auto">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
@@ -2886,7 +2987,7 @@ style: kind === 'arrow'
       {tab === 'routing' ? null : (
         <>
           {/* Step chips: wrap to next line when no space */}
-          <div className="px-2 py-1.5 safe-left safe-right">
+          <div className="py-2">
         <div className="flex flex-wrap gap-2 items-center">
           <DndContext
             sensors={dndSensors}
@@ -2965,14 +3066,14 @@ style: kind === 'arrow'
       </div>
 
       {!canEdit && (
-        <div className="px-2 py-2 safe-left safe-right border-b border-gray-100 dark:border-gray-800/80">
+        <div className="py-2.5 border-b border-gray-100 dark:border-gray-800/80">
           <SopAuthorSignatureFetch sopId={sopId} />
         </div>
       )}
 
       {/* Main editor: step badge + description row, then video + timeline */}
       {currentStep && (
-        <div className="p-2 md:p-3 space-y-1 md:space-y-2">
+        <div className="space-y-1 md:space-y-2 pt-2 pb-3">
           <div className="flex items-start gap-3">
             <div
               className="flex min-h-9 shrink-0 items-center justify-center self-start rounded bg-blue-600 px-3 py-1.5"
@@ -3003,9 +3104,116 @@ style: kind === 'arrow'
           </div>
 
           {/* Video or image + timeline (timeline only for video) */}
-          {!currentStep.video_path && !videoUrl && !currentStep.image_path && !imageUrl ? (
+          {isTextStep ? (
+            <div className="space-y-3">
+              {canEdit && !isStepIdFromDb(currentStep.id) ? (
+                <p className="text-xs text-amber-900 dark:text-amber-100/90 rounded-lg bg-amber-50 dark:bg-amber-950/50 px-3 py-2 border border-amber-200 dark:border-amber-800">
+                  New steps exist only in your browser until you use the top action (Update / Publish) to sync.
+                  After that, text pages save to the server automatically.
+                </p>
+              ) : null}
+              <div className="w-full rounded-lg overflow-hidden bg-black">
+                <TextStepCanvas payload={(currentStep.text_payload as TextStepPayload | null) ?? defaultTextPayload()} />
+              </div>
+
+              {canEdit ? (
+                <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 space-y-3">
+                  <div className="grid grid-cols-1 gap-3">
+                    <label className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                      Title
+                      <input
+                        value={((currentStep.text_payload as TextStepPayload | null)?.title ?? '')}
+                        onChange={(e) => {
+                          const prev = ((currentStep.text_payload as TextStepPayload | null) ?? defaultTextPayload())
+                          handleTextPayloadChange({ ...prev, title: e.target.value })
+                        }}
+                        onBlur={() => void handleTextPayloadBlur()}
+                        className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-base text-gray-900 dark:text-gray-100"
+                        placeholder="Title…"
+                      />
+                    </label>
+
+                    <label className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                      Bullet points (one per line)
+                      <textarea
+                        value={(((currentStep.text_payload as TextStepPayload | null)?.bullets ?? [])).join('\n')}
+                        onChange={(e) => {
+                          const prev = ((currentStep.text_payload as TextStepPayload | null) ?? defaultTextPayload())
+                          const bullets = e.target.value.split('\n')
+                          handleTextPayloadChange({ ...prev, bullets })
+                        }}
+                        onBlur={() => void handleTextPayloadBlur()}
+                        rows={5}
+                        className="mt-1 w-full resize-y rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-base text-gray-900 dark:text-gray-100"
+                        placeholder={'- First point\n- Second point'}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <label className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span>Title size</span>
+                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">18–64</span>
+                      </span>
+                      <input
+                        type="number"
+                        min={18}
+                        max={64}
+                        value={((currentStep.text_payload as TextStepPayload | null)?.titleSize ?? 36)}
+                        onChange={(e) => {
+                          const prev = ((currentStep.text_payload as TextStepPayload | null) ?? defaultTextPayload())
+                          handleTextPayloadChange({ ...prev, titleSize: Number(e.target.value) })
+                        }}
+                        onBlur={() => void handleTextPayloadBlur()}
+                        className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-base text-gray-900 dark:text-gray-100"
+                      />
+                    </label>
+
+                    <label className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span>Bullet size</span>
+                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">14–48</span>
+                      </span>
+                      <input
+                        type="number"
+                        min={14}
+                        max={48}
+                        value={((currentStep.text_payload as TextStepPayload | null)?.bulletSize ?? 22)}
+                        onChange={(e) => {
+                          const prev = ((currentStep.text_payload as TextStepPayload | null) ?? defaultTextPayload())
+                          handleTextPayloadChange({ ...prev, bulletSize: Number(e.target.value) })
+                        }}
+                        onBlur={() => void handleTextPayloadBlur()}
+                        className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-base text-gray-900 dark:text-gray-100"
+                      />
+                    </label>
+
+                    <label className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span>Row gap</span>
+                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">0–60</span>
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={60}
+                        value={((currentStep.text_payload as TextStepPayload | null)?.rowGap ?? 10)}
+                        onChange={(e) => {
+                          const prev = ((currentStep.text_payload as TextStepPayload | null) ?? defaultTextPayload())
+                          handleTextPayloadChange({ ...prev, rowGap: Number(e.target.value) })
+                        }}
+                        onBlur={() => void handleTextPayloadBlur()}
+                        className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-base text-gray-900 dark:text-gray-100"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : !currentStep.video_path && !videoUrl && !currentStep.image_path && !imageUrl ? (
             canEdit ? (
-              <div className="-mx-3 md:mx-0">
+              <div>
                 <VideoCapture
                   stepId={currentStep.id}
                   sopId={sopId}
@@ -3014,6 +3222,15 @@ style: kind === 'arrow'
                   existingVideoPath={currentStep.video_path}
                   existingImagePath={currentStep.image_path}
                 />
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleCreateTextPage()}
+                    className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3 text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700/80 transition-colors touch-target"
+                  >
+                    Create text page
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="w-full aspect-video bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center text-gray-500">

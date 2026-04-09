@@ -540,7 +540,7 @@ export default function AdminMachinesPage() {
 
   const stickyHeader = (
     <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-      <div className="flex gap-3 p-4 min-h-[44px]">
+      <div className="flex gap-3 py-3 min-h-[44px]">
         <Link
           href="/dashboard"
           className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
@@ -557,7 +557,7 @@ export default function AdminMachinesPage() {
     return (
       <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right safe-bottom bg-gray-50 dark:bg-gray-900">
         {stickyHeader}
-        <div className="p-4">
+        <div className="py-4">
           <p className="text-gray-600 dark:text-gray-400">You don’t have access to this page.</p>
         </div>
       </div>
@@ -568,7 +568,7 @@ export default function AdminMachinesPage() {
     <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right pb-20 md:pb-4 safe-bottom bg-gray-50 dark:bg-gray-900">
       {stickyHeader}
 
-      <div className="p-4 space-y-8 max-w-4xl mx-auto">
+      <div className="space-y-8 max-w-4xl mx-auto py-3 pb-4">
         <p className="text-sm text-gray-600 dark:text-gray-400">
           Add or remove machines on each line and leg. Only super users can open this page.
         </p>

@@ -23,9 +23,11 @@ create table if not exists sop_steps (
   sop_id uuid references sops(id) on delete cascade not null,
   idx int not null,
   title text not null,
+  kind text not null default 'media' check (kind in ('media','text')),
   instructions text,
   video_path text,   -- R2 object key (S3 path)
   thumbnail_path text,
+  text_payload jsonb,
   duration_ms int,
   created_at timestamptz default now(),
   updated_at timestamptz default now()

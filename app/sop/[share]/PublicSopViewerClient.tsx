@@ -127,7 +127,7 @@ export default function PublicSopViewerClient({
 
   if (steps.length === 0) {
     return (
-      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom p-4 bg-gray-50 dark:bg-gray-900">
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom bg-gray-50 dark:bg-gray-900 py-8">
         <p className="text-center text-gray-600 dark:text-gray-400">
           This SOP doesn&apos;t exist or has no steps.
         </p>
@@ -136,9 +136,9 @@ export default function PublicSopViewerClient({
   }
 
   return (
-    <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen min-h-[100dvh] safe-top safe-bottom safe-left safe-right bg-gray-50 dark:bg-gray-900">
       <div className="sticky top-0 z-20 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-        <div className="flex gap-2 px-2 py-2 min-h-[44px]">
+        <div className="flex gap-2 py-2 min-h-[44px]">
           <button
             type="button"
             onClick={handleBack}
@@ -153,13 +153,13 @@ export default function PublicSopViewerClient({
           </h1>
         </div>
         {sop.description && (
-          <p className="text-sm text-gray-600 dark:text-gray-400 text-center px-4 pb-3 mt-0">
+          <p className="text-sm text-gray-600 dark:text-gray-400 text-center pb-3 mt-0">
             {sop.description}
           </p>
         )}
       </div>
 
-      <div className="scroll-smooth">
+      <div className="scroll-smooth pb-3">
         {steps.map((step, idx) => (
           <StepCard
             key={step.id}
@@ -177,7 +177,7 @@ export default function PublicSopViewerClient({
         ))}
       </div>
 
-      <div className="px-4 pt-4 pb-1 border-t border-gray-200 dark:border-gray-800 safe-left safe-right max-w-lg mx-auto w-full">
+      <div className="pt-5 pb-2 border-t border-gray-200 dark:border-gray-800 max-w-lg mx-auto w-full">
         <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
           Share this SOP
         </h2>

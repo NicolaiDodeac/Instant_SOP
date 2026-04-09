@@ -150,7 +150,7 @@ export default function DashboardClient({
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right pb-20 md:pb-4 safe-bottom">
       <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-        <div className="flex items-center justify-between gap-2 px-3 py-2 md:px-4 md:py-2.5">
+        <div className="flex items-center justify-between gap-2 py-2 md:py-2.5">
           <h1 className="text-xl md:text-2xl font-bold truncate">SOPs</h1>
           <div className="flex items-center gap-1 shrink-0">
             {isSuperUser && (
@@ -180,7 +180,7 @@ export default function DashboardClient({
         </div>
       </div>
 
-      <div className="p-4 space-y-4">
+      <div className="space-y-4 py-3 pb-4">
         <PwaInstallCard />
 
         {isEditor && (

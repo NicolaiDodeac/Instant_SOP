@@ -102,7 +102,7 @@ export default function StepCard({
       className="w-full min-h-screen flex flex-col bg-gray-50 dark:bg-gray-900"
     >
       {/* Step badge + description (same row as editor; number from position) */}
-      <div className="border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
+      <div className="border-b border-gray-200 bg-white py-3.5 dark:border-gray-700 dark:bg-gray-800">
         <div className="flex items-start gap-3">
           <div className="flex min-h-9 shrink-0 items-center justify-center self-start rounded bg-blue-600 px-3 py-1.5">
             <span className="text-base font-semibold tabular-nums leading-snug text-white">
@@ -118,7 +118,7 @@ export default function StepCard({
       </div>
 
       {/* Video or image - Full Width with Rounded Corners */}
-      <div className="flex-1 bg-white px-4 pb-4 pt-2 dark:bg-gray-800">
+      <div className="flex-1 bg-white pb-5 pt-3 dark:bg-gray-800">
         {isTextStep ? (
           <div className="w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto">
             <TextStepCanvas payload={step.text_payload ?? null} />

@@ -483,7 +483,7 @@ export default function StepPlayer({
     <div className="space-y-1">
       <div
         ref={containerRef}
-        className="relative w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto bg-black overflow-hidden rounded-lg aspect-[9/16] max-h-[78dvh] min-h-[200px] md:max-h-[85vh] md:min-h-[200px]"
+        className="relative w-full max-w-none mx-0 bg-black overflow-hidden rounded-none md:rounded-lg aspect-[9/16] max-h-[85dvh] min-h-[200px] md:mx-auto md:max-w-[min(100%,calc(100dvh*9/16))] md:max-h-[85vh] md:min-h-[200px]"
       >
         {isImageMode ? (
           <img

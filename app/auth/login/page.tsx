@@ -203,7 +203,7 @@ function LoginContent() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right p-4">
+    <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right py-6">
       <div className="w-full max-w-md">
         <h1 className="text-3xl font-bold mb-8 text-center">AR SOP Builder</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400 text-center mb-6">
@@ -373,7 +373,7 @@ function LoginContent() {
 export default function LoginPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right p-4">
+      <div className="min-h-screen flex items-center justify-center safe-top safe-bottom safe-left safe-right py-6">
         <div className="w-full max-w-md text-center text-gray-500">Loading...</div>
       </div>
     }>

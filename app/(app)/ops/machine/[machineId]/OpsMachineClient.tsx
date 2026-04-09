@@ -310,7 +310,7 @@ export default function OpsMachineClient({
   return (
     <div className="min-h-screen min-h-[100dvh] safe-top safe-left safe-right safe-bottom bg-gray-50 dark:bg-gray-900">
       <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 safe-top">
-        <div className="flex items-center gap-2 px-3 py-2">
+        <div className="flex items-center gap-2 py-2">
           <Link
             href="/ops"
             className="text-blue-600 dark:text-blue-400 touch-target px-2 py-1.5 min-w-[44px] text-sm font-medium shrink-0"
@@ -326,7 +326,7 @@ export default function OpsMachineClient({
             ) : null}
           </div>
         </div>
-        <div className="px-3 pb-3">
+        <div className="pb-3">
           <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Station</div>
           <div className="mt-1 relative">
             <button
@@ -414,7 +414,7 @@ export default function OpsMachineClient({
         </div>
       </div>
 
-      <div className="p-4 space-y-4 max-w-lg mx-auto">
+      <div className="space-y-4 max-w-lg mx-auto py-3 pb-4">
         {sopsLoading ? (
           <div className="text-center text-sm text-gray-600 dark:text-gray-400">Loading SOPs…</div>
         ) : null}
@@ -455,7 +455,7 @@ export default function OpsMachineClient({
           </button>
 
           {shareOpen ? (
-            <div id="share-accordion" className="px-3 pb-3">
+            <div id="share-accordion" className="pb-3">
               <div className="pt-1">
                 <div className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                   Machine link

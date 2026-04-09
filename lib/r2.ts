@@ -17,16 +17,6 @@ function getConfig() {
   return { accessKeyId, secretAccessKey, endpoint, region, bucket }
 }
 
-/** True when server-side R2 credentials are present (Vercel must set the same vars as local `.env.local`). */
-export function isR2Configured(): boolean {
-  return !!(
-    process.env.R2_ACCESS_KEY_ID &&
-    process.env.R2_SECRET_ACCESS_KEY &&
-    process.env.R2_ENDPOINT &&
-    process.env.R2_BUCKET_NAME
-  )
-}
-
 export function getR2Client(): S3Client {
   if (cached) return cached
   const { accessKeyId, secretAccessKey, endpoint, region } = getConfig()

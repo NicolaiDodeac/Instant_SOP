@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { headObjectExists, isR2Configured, presignGetObject } from '@/lib/r2'
+import { headObjectExists, presignGetObject } from '@/lib/r2'
 
 export type PresignPathResult =
   | { ok: true; url: string }
@@ -16,15 +16,6 @@ export async function presignGetForVideoPath(
 ): Promise<PresignPathResult> {
   if (path.includes('..') || !path.includes('/')) {
     return { ok: false, status: 400, error: 'Invalid path format' }
-  }
-
-  if (!isR2Configured()) {
-    return {
-      ok: false,
-      status: 503,
-      error:
-        'Video storage is not configured on this server. Add R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, and R2_BUCKET_NAME to the hosting environment (e.g. Vercel → Project → Settings → Environment Variables).',
-    }
   }
 
   if (!userId) {

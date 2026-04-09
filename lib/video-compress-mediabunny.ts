@@ -11,6 +11,13 @@ import type { InputVideoTrack } from 'mediabunny'
 /** Upper bound for the wider side after rotation metadata—matches common phone capture without huge files. */
 const MAX_OUTPUT_DISPLAY_WIDTH = 1080
 
+/**
+ * Longest display side for typical 720p-class phone video. Above this (FHD/UHD), re-encode can keep rotation in
+ * container metadata instead of baking pixels; some stacks then show a 90° twist. We only force a bake when the
+ * track actually uses rotation metadata so plain FHD (rotation 0) is unchanged.
+ */
+const HD_DISPLAY_LONG_SIDE_MAX = 1280
+
 export interface MediabunnyCompressOptions {
   onProgress?: (progress: number) => void
   signal?: AbortSignal
@@ -19,6 +26,13 @@ export interface MediabunnyCompressOptions {
 function displayWidthSquarePixels(track: InputVideoTrack): number {
   const r = track.rotation
   return r % 180 === 0 ? track.squarePixelWidth : track.squarePixelHeight
+}
+
+/** True when we should bake orientation into pixels (output rotation 0) for reliable portrait after upload. */
+function needsHighResRotationBaked(track: InputVideoTrack): boolean {
+  const longSide = Math.max(track.displayWidth, track.displayHeight)
+  if (longSide <= HD_DISPLAY_LONG_SIDE_MAX) return false
+  return track.rotation !== 0
 }
 
 /**
@@ -57,6 +71,7 @@ export async function compressVideoWithMediabunny(
       width: Math.min(MAX_OUTPUT_DISPLAY_WIDTH, displayWidthSquarePixels(track)),
       bitrate: QUALITY_HIGH,
       frameRate: 30,
+      ...(needsHighResRotationBaked(track) ? { allowRotationMetadata: false } : {}),
     }),
     audio: { discard: true },
     showWarnings: false,

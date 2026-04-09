@@ -152,6 +152,11 @@ import type { TextStepPayload } from '@/lib/types'
 /** Editor-only preview; does not change exported video file. Gated by NEXT_PUBLIC_ENABLE_VIDEO_PREVIEW_SPEED. */
 const VIDEO_PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4, 8] as const
 
+/** When true (set `NEXT_PUBLIC_DISABLE_VIDEO_COMPRESSION=1` in `.env.local`), uploads the raw blob and skips Mediabunny. */
+const DISABLE_VIDEO_COMPRESSION =
+  process.env.NEXT_PUBLIC_DISABLE_VIDEO_COMPRESSION === '1' ||
+  process.env.NEXT_PUBLIC_DISABLE_VIDEO_COMPRESSION === 'true'
+
 /** Server-side segment speed change (ffmpeg); encoded into the file. Below 1 = slow, above 1 = fast. */
 const SEGMENT_SPEED_FACTORS = [0.5, 2, 3, 4, 8] as const
 
@@ -1350,24 +1355,33 @@ export default function EditorPageClient({
     if (currentStepId === stepId) {
       loadLocalVideo()
     }
-    setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'compressing' }))
-    setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+    setStepUploadStatus((prev) => ({
+      ...prev,
+      [stepId]: DISABLE_VIDEO_COMPRESSION ? 'uploading' : 'compressing',
+    }))
+    if (!DISABLE_VIDEO_COMPRESSION) {
+      setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+    }
 
     try {
       let videoBlob: Blob
       let usedCompression = false
-      try {
-        videoBlob = await compressVideoWithMediabunny(blob, {
-          onProgress: (p) => {
-            setStepUploadProgress((prev) => ({ ...prev, [stepId]: Math.round(p * 100) }))
-          },
-        })
-        usedCompression = true
-      } catch (err) {
-        if (process.env.NODE_ENV === 'development') {
-          console.warn('Compression skipped:', err)
-        }
+      if (DISABLE_VIDEO_COMPRESSION) {
         videoBlob = blob
+      } else {
+        try {
+          videoBlob = await compressVideoWithMediabunny(blob, {
+            onProgress: (p) => {
+              setStepUploadProgress((prev) => ({ ...prev, [stepId]: Math.round(p * 100) }))
+            },
+          })
+          usedCompression = true
+        } catch (err) {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('Compression skipped:', err)
+          }
+          videoBlob = blob
+        }
       }
 
       setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'uploading' }))

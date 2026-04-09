@@ -5,21 +5,10 @@
  * Output: MP4, 720px width, ~1.5 Mbps, no audio.
  */
 
-import type { InputVideoTrack, Rotation } from 'mediabunny'
+import type { InputVideoTrack } from 'mediabunny'
 
 function evenDimension(n: number): number {
   return Math.max(2, Math.round(n / 2) * 2)
-}
-
-/**
- * Mediabunny combines container `rotation` with WebCodecs-decoded frames. On some devices the decoded
- * bitmap is already display-oriented while `track.rotation` is still 90/270, which bakes an extra 90°
- * into the output. Adding the complementary rotation makes `totalRotation` 0 for CanvasSink while we
- * still size the output from {@link InputVideoTrack.displayWidth} / `displayHeight` (not coded sizes).
- */
-function negateRotation(rotation: Rotation): Rotation {
-  if (rotation === 0) return 0
-  return ((360 - rotation) % 360) as Rotation
 }
 
 export interface MediabunnyCompressOptions {
@@ -62,8 +51,8 @@ export async function compressVideoWithMediabunny(
         fit: 'contain',
         bitrate: 1_500_000,
         frameRate: 30,
+        /** Bake orientation into pixels; do not rely on MP4 rotation metadata after re-encode. */
         allowRotationMetadata: false,
-        rotate: negateRotation(track.rotation),
       }
     },
     audio: { discard: true },

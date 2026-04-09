@@ -45,6 +45,12 @@ export async function compressVideoWithMediabunny(
       width: 720,
       bitrate: 1_500_000,
       frameRate: 30,
+      /**
+       * Phone portrait clips are often stored as landscape pixels + rotation metadata.
+       * If the output MP4 only carried rotation tags (or lost them), playback looked sideways.
+       * Bake orientation into pixels so the file matches what the user saw when recording.
+       */
+      allowRotationMetadata: false,
     },
     audio: { discard: true },
     showWarnings: false,

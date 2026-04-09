@@ -2,27 +2,25 @@
  * Browser video compression using Mediabunny (WebCodecs-based).
  * Handles large files via streaming I/O; no WASM heap like FFmpeg.
  *
- * Output: MP4, H.264 via WebCodecs, quality-tier bitrate, no audio.
+ * Output: MP4, up to 1080px display width (never upscaled), H.264 via WebCodecs,
+ * Mediabunny quality-tier bitrate (QUALITY_HIGH), no audio.
  *
- * FHD/UHD sources were twisting after upload while HD did not — same encode settings but different resize paths.
- * When the longest display side exceeds 720p-class (1280px), we cap the output display width at **720** so
- * compression matches native HD phone video (downscale + transcode). Sharper 1080 cap applies only to
- * already-HD-class sources.
+ * Orientation: we always set `allowRotationMetadata: false` so Mediabunny bakes rotation into
+ * pixels for any non-zero `track.rotation`. Otherwise transcoding can skip the canvas path when
+ * dimensions match, and encoded MP4 rotation metadata / pixel layout can disagree after upload —
+ * often visible on FHD while HD still looked fine.
+ *
+ * Debugging wrong twist:
+ * 1. Set `NEXT_PUBLIC_DISABLE_VIDEO_COMPRESSION=1` and upload — if orientation is correct, the bug is in this module.
+ * 2. In dev, watch `[video-compress]` logs (rotation + coded vs display size).
+ * 3. After compress, `URL.createObjectURL(outBlob)` in DevTools and open in a new tab before upload.
  */
 
 import type { InputVideoTrack } from 'mediabunny'
 
-/** Max display width for sources that are already “HD-class” (longest side ≤ {@link HD_CLASS_LONG_SIDE_MAX}). */
-const MAX_OUTPUT_DISPLAY_WIDTH_HD_TIER = 1080
+const MAX_OUTPUT_DISPLAY_WIDTH = 1080
 
-/**
- * Longest side (px) for typical 720p phone video (e.g. 720×1280). Above this we treat as FHD/UHD and downscale
- * like HD recordings to avoid the bad orientation path.
- */
-const HD_CLASS_LONG_SIDE_MAX = 1280
-
-/** Display width cap for FHD/UHD — same narrow-side ballpark as 720p phone capture so behavior matches HD. */
-const MAX_OUTPUT_DISPLAY_WIDTH_FHD_TIER = 720
+const LOG_PREFIX = '[video-compress]'
 
 export interface MediabunnyCompressOptions {
   onProgress?: (progress: number) => void
@@ -32,14 +30,6 @@ export interface MediabunnyCompressOptions {
 function displayWidthSquarePixels(track: InputVideoTrack): number {
   const r = track.rotation
   return r % 180 === 0 ? track.squarePixelWidth : track.squarePixelHeight
-}
-
-function maxOutputDisplayWidthForTrack(track: InputVideoTrack): number {
-  const longSide = Math.max(track.displayWidth, track.displayHeight)
-  if (longSide > HD_CLASS_LONG_SIDE_MAX) {
-    return MAX_OUTPUT_DISPLAY_WIDTH_FHD_TIER
-  }
-  return MAX_OUTPUT_DISPLAY_WIDTH_HD_TIER
 }
 
 /**
@@ -74,11 +64,23 @@ export async function compressVideoWithMediabunny(
   const conversion = await Conversion.init({
     input,
     output,
-    video: (track: InputVideoTrack) => ({
-      width: Math.min(maxOutputDisplayWidthForTrack(track), displayWidthSquarePixels(track)),
-      bitrate: QUALITY_HIGH,
-      frameRate: 30,
-    }),
+    video: (track: InputVideoTrack) => {
+      if (process.env.NODE_ENV === 'development') {
+        console.debug(LOG_PREFIX, 'input track', {
+          rotation: track.rotation,
+          displayWxH: [track.displayWidth, track.displayHeight],
+          squareWxH: [track.squarePixelWidth, track.squarePixelHeight],
+          codedWxH: [track.codedWidth, track.codedHeight],
+          targetWidth: Math.min(MAX_OUTPUT_DISPLAY_WIDTH, displayWidthSquarePixels(track)),
+        })
+      }
+      return {
+        width: Math.min(MAX_OUTPUT_DISPLAY_WIDTH, displayWidthSquarePixels(track)),
+        bitrate: QUALITY_HIGH,
+        frameRate: 30,
+        allowRotationMetadata: false,
+      }
+    },
     audio: { discard: true },
     showWarnings: false,
   })

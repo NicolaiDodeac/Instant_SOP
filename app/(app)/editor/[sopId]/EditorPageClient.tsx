@@ -1370,12 +1370,26 @@ export default function EditorPageClient({
         videoBlob = blob
       } else {
         try {
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[upload]', 'compress start', {
+              nodeEnv: process.env.NODE_ENV,
+              disableCompression: DISABLE_VIDEO_COMPRESSION,
+              inputBytes: blob.size,
+              inputType: blob.type,
+            })
+          }
           videoBlob = await compressVideoWithMediabunny(blob, {
             onProgress: (p) => {
               setStepUploadProgress((prev) => ({ ...prev, [stepId]: Math.round(p * 100) }))
             },
           })
           usedCompression = true
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[upload]', 'compress done', {
+              outputBytes: videoBlob.size,
+              outputType: videoBlob.type,
+            })
+          }
         } catch (err) {
           if (process.env.NODE_ENV === 'development') {
             console.warn('Compression skipped:', err)

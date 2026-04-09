@@ -2,51 +2,48 @@
  * Browser video compression using Mediabunny (WebCodecs-based).
  * Handles large files via streaming I/O; no WASM heap like FFmpeg.
  *
- * Output: MP4, up to 1080px display width (never upscaled), H.264 via WebCodecs,
- * quality-tier bitrate from Mediabunny (scales with resolution; favors sharp detail on phones), no audio.
+ * Output: MP4, H.264 via WebCodecs, quality-tier bitrate, no audio.
+ *
+ * FHD/UHD sources were twisting after upload while HD did not — same encode settings but different resize paths.
+ * When the longest display side exceeds 720p-class (1280px), we cap the output display width at **720** so
+ * compression matches native HD phone video (downscale + transcode). Sharper 1080 cap applies only to
+ * already-HD-class sources.
  */
 
 import type { InputVideoTrack } from 'mediabunny'
 
-/** Upper bound for the wider side after rotation metadata—matches common phone capture without huge files. */
-const MAX_OUTPUT_DISPLAY_WIDTH = 1080
+/** Max display width for sources that are already “HD-class” (longest side ≤ {@link HD_CLASS_LONG_SIDE_MAX}). */
+const MAX_OUTPUT_DISPLAY_WIDTH_HD_TIER = 1080
 
 /**
- * Longest display side for typical 720p-class phone video. Above this (FHD/UHD portrait), some encodes arrive twisted
- * ~90° after upload; we bake with a fixed total rotation of 270° CW (one quarter-turn left vs upright coded frames),
- * then strip rotation metadata so storage always matches what you see in the editor.
+ * Longest side (px) for typical 720p phone video (e.g. 720×1280). Above this we treat as FHD/UHD and downscale
+ * like HD recordings to avoid the bad orientation path.
  */
-const HD_DISPLAY_LONG_SIDE_MAX = 1280
+const HD_CLASS_LONG_SIDE_MAX = 1280
 
-/** Total rotation (CW, Mediabunny) baked into pixels for the high-res portrait fix. 270° = “twist left” vs 0°. */
-const HIGH_RES_PORTRAIT_BAKE_ROTATION = 270 as const
+/** Display width cap for FHD/UHD — same narrow-side ballpark as 720p phone capture so behavior matches HD. */
+const MAX_OUTPUT_DISPLAY_WIDTH_FHD_TIER = 720
 
 export interface MediabunnyCompressOptions {
   onProgress?: (progress: number) => void
   signal?: AbortSignal
 }
 
-type Rotation = 0 | 90 | 180 | 270
-
 function displayWidthSquarePixels(track: InputVideoTrack): number {
   const r = track.rotation
   return r % 180 === 0 ? track.squarePixelWidth : track.squarePixelHeight
 }
 
-function needsHighResPortraitTwistFix(track: InputVideoTrack): boolean {
+function maxOutputDisplayWidthForTrack(track: InputVideoTrack): number {
   const longSide = Math.max(track.displayWidth, track.displayHeight)
-  if (longSide <= HD_DISPLAY_LONG_SIDE_MAX) return false
-  // Portrait intent only — don’t rotate landscape FHD/UHD.
-  return track.displayHeight > track.displayWidth
-}
-
-/** `track.rotation + returned value ≡ HIGH_RES_PORTRAIT_BAKE_ROTATION` (mod 360). */
-function extraRotateForHighResPortrait(track: InputVideoTrack): Rotation {
-  return ((HIGH_RES_PORTRAIT_BAKE_ROTATION - track.rotation + 360) % 360) as Rotation
+  if (longSide > HD_CLASS_LONG_SIDE_MAX) {
+    return MAX_OUTPUT_DISPLAY_WIDTH_FHD_TIER
+  }
+  return MAX_OUTPUT_DISPLAY_WIDTH_HD_TIER
 }
 
 /**
- * Compress a video blob with Mediabunny: cap resolution at 1080p (downscale only), high quality tier (~half the bitrate of VERY_HIGH at the same size), drop audio.
+ * Compress a video blob: downscale only, high quality tier, drop audio.
  * Uses WebCodecs (hardware-accelerated when available); works for large files.
  */
 export async function compressVideoWithMediabunny(
@@ -77,19 +74,11 @@ export async function compressVideoWithMediabunny(
   const conversion = await Conversion.init({
     input,
     output,
-    video: (track: InputVideoTrack) => {
-      const base = {
-        width: Math.min(MAX_OUTPUT_DISPLAY_WIDTH, displayWidthSquarePixels(track)),
-        bitrate: QUALITY_HIGH,
-        frameRate: 30,
-      }
-      if (!needsHighResPortraitTwistFix(track)) return base
-      return {
-        ...base,
-        rotate: extraRotateForHighResPortrait(track),
-        allowRotationMetadata: false,
-      }
-    },
+    video: (track: InputVideoTrack) => ({
+      width: Math.min(maxOutputDisplayWidthForTrack(track), displayWidthSquarePixels(track)),
+      bitrate: QUALITY_HIGH,
+      frameRate: 30,
+    }),
     audio: { discard: true },
     showWarnings: false,
   })

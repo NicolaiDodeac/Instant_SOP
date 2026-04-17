@@ -1,13 +1,18 @@
 import { randomBytes } from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import {
   buildMachineFamilyCodeBase,
   truncateMachineFamilyCode,
 } from '@/lib/machine-family-code'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import { requireSuperUser } from '@/lib/require-super-user-server'
+import {
+  adminCreateMachineFamilyBodySchema,
+  MACHINE_FAMILY_MAX_CODE_LEN,
+} from '@/lib/validation/admin'
 
-const MAX_CODE_LEN = 180
+const MAX_CODE_LEN = MACHINE_FAMILY_MAX_CODE_LEN
 
 function normalizeExplicitCode(raw: string): string {
   return raw.replace(/\s+/g, '_').toUpperCase()
@@ -33,31 +38,28 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(check.json, { status: check.status })
   }
 
-  let body: {
-    code?: string
-    name?: string
-    supplier?: string | null
-    uses_hmi_station_codes?: boolean
-  }
+  let body: unknown
   try {
     body = await request.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return apiErrorResponse('Invalid JSON', 400, { retryable: false })
   }
 
-  const codeRaw = typeof body.code === 'string' ? body.code.trim() : ''
-  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  const parsed = adminCreateMachineFamilyBodySchema.safeParse(body)
+  if (!parsed.success) {
+    const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+    return apiErrorResponse(msg, 400, { retryable: false })
+  }
+
+  const codeRaw = parsed.data.code?.trim() ?? ''
+  const name = parsed.data.name
   const supplier =
-    body.supplier === null || body.supplier === undefined
+    parsed.data.supplier === undefined
       ? null
-      : typeof body.supplier === 'string'
-        ? body.supplier.trim() || null
-        : null
-  const uses_hmi_station_codes = body.uses_hmi_station_codes === true
-
-  if (!name) {
-    return NextResponse.json({ error: 'Missing or invalid name' }, { status: 400 })
-  }
+      : parsed.data.supplier === null
+        ? null
+        : parsed.data.supplier.trim() || null
+  const uses_hmi_station_codes = parsed.data.uses_hmi_station_codes === true
 
   const explicit = codeRaw.length > 0
   const service = createServiceRoleClient()
@@ -65,7 +67,7 @@ export async function POST(request: NextRequest) {
   if (explicit) {
     const code = normalizeExplicitCode(codeRaw)
     if (!code) {
-      return NextResponse.json({ error: 'Missing or invalid code or name' }, { status: 400 })
+      return apiErrorResponse('Missing or invalid code or name', 400, { retryable: false })
     }
 
     const { data: inserted, error: insertError } = await service
@@ -82,16 +84,17 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       if (insertError.code === '23505') {
-        return NextResponse.json(
-          { error: 'A machine family with this code already exists.' },
-          { status: 409 }
+        return apiErrorResponse(
+          'A machine family with this code already exists.',
+          409,
+          { retryable: false }
         )
       }
-      return NextResponse.json({ error: insertError.message }, { status: 500 })
+      return apiErrorResponse(insertError.message, 500)
     }
 
     if (!inserted?.id) {
-      return NextResponse.json({ error: 'Insert failed' }, { status: 500 })
+      return apiErrorResponse('Insert failed', 500)
     }
 
     return NextResponse.json({ machineFamily: inserted })
@@ -122,12 +125,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (insertError) {
-      return NextResponse.json({ error: insertError.message }, { status: 500 })
+      return apiErrorResponse(insertError.message, 500)
     }
   }
 
-  return NextResponse.json(
-    { error: 'Could not assign a unique type code. Add a more specific name or supplier.' },
-    { status: 409 }
+  return apiErrorResponse(
+    'Could not assign a unique type code. Add a more specific name or supplier.',
+    409,
+    { retryable: false }
   )
 }

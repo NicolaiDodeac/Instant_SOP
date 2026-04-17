@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import { requireSuperUser } from '@/lib/require-super-user-server'
 import type { Line, LineLeg, Machine, MachineFamily } from '@/lib/types'
+import { adminCreateMachineBodySchema } from '@/lib/validation/admin'
 
 type MachineRow = Machine & { machine_families?: MachineFamily | null }
 
@@ -76,35 +78,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(check.json, { status: check.status })
   }
 
-  let body: {
-    line_leg_id?: string
-    machine_family_id?: string
-    name?: string
-    code?: string | null
-  }
+  let body: unknown
   try {
     body = await request.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return apiErrorResponse('Invalid JSON', 400, { retryable: false })
   }
 
-  const line_leg_id = typeof body.line_leg_id === 'string' ? body.line_leg_id.trim() : ''
-  const machine_family_id =
-    typeof body.machine_family_id === 'string' ? body.machine_family_id.trim() : ''
-  const name = typeof body.name === 'string' ? body.name.trim() : ''
-  const code =
-    body.code === null || body.code === undefined
-      ? null
-      : typeof body.code === 'string'
-        ? body.code.trim() || null
-        : null
-
-  if (!line_leg_id || !machine_family_id || !name) {
-    return NextResponse.json(
-      { error: 'Missing line_leg_id, machine_family_id, or name' },
-      { status: 400 }
-    )
+  const parsed = adminCreateMachineBodySchema.safeParse(body)
+  if (!parsed.success) {
+    const flat = parsed.error.flatten()
+    const message =
+      flat.fieldErrors.line_leg_id?.[0] ??
+      flat.fieldErrors.machine_family_id?.[0] ??
+      flat.fieldErrors.name?.[0] ??
+      flat.fieldErrors.code?.[0] ??
+      'Invalid request'
+    return apiErrorResponse(message, 400, { retryable: false })
   }
+
+  const { line_leg_id, machine_family_id, name, code } = parsed.data
 
   const service = createServiceRoleClient()
   const { data: inserted, error: insertError } = await service
@@ -121,12 +114,13 @@ export async function POST(request: NextRequest) {
 
   if (insertError) {
     if (insertError.code === '23505') {
-      return NextResponse.json(
-        { error: 'A machine with this name already exists on that leg.' },
-        { status: 409 }
+      return apiErrorResponse(
+        'A machine with this name already exists on that leg.',
+        409,
+        { retryable: false }
       )
     }
-    return NextResponse.json({ error: insertError.message }, { status: 500 })
+    return apiErrorResponse(insertError.message, 500)
   }
 
   return NextResponse.json({ machine: inserted })

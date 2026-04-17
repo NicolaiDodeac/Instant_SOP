@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import {
   buildSopListTitleSearchFilter,
   parseSopListPageParams,
@@ -6,6 +7,7 @@ import {
 } from '@/features/sops/server/sop-list-query'
 import { createClientServer } from '@/lib/supabase/server'
 import type { SOP } from '@/lib/types'
+import { z } from 'zod'
 
 const SOP_COLUMNS =
   'id, title, description, owner, published, share_slug, created_at, updated_at, last_edited_by, sop_number'
@@ -23,12 +25,20 @@ export async function GET(request: NextRequest) {
       error: authError,
     } = await supabase.auth.getUser()
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return apiErrorResponse('Unauthorized', 401, { retryable: false })
     }
 
     const url = request.nextUrl
     const { limit, offset, q } = parseSopListPageParams(url.searchParams)
-    const trainingModuleId = (url.searchParams.get('trainingModuleId') || '').trim()
+    const trainingModuleRaw = (url.searchParams.get('trainingModuleId') || '').trim()
+    let trainingModuleId: string | undefined
+    if (trainingModuleRaw) {
+      const parsedTm = z.string().uuid().safeParse(trainingModuleRaw)
+      if (!parsedTm.success) {
+        return apiErrorResponse('Invalid trainingModuleId', 400, { retryable: false })
+      }
+      trainingModuleId = parsedTm.data
+    }
     const titleSearch = buildSopListTitleSearchFilter(q)
 
     const selectCols = trainingModuleId
@@ -62,7 +72,7 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       console.error('GET /api/dashboard/published-sops:', error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return apiErrorResponse(error.message, 500)
     }
 
     const rows = (data ?? []) as unknown[]
@@ -80,6 +90,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ items, hasMore, totalSops })
   } catch (e) {
     console.error('GET /api/dashboard/published-sops error:', e)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return apiErrorResponse('Internal server error', 500)
   }
 }

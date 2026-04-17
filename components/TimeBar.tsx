@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 
 export type TimelineDragMode = 'seek' | 'setStart' | 'setEnd'
 
@@ -99,8 +99,8 @@ export default function TimeBar({
     }
   }, [dragging, duration, startTime, endTime, dragMode, onStartTimeChange, onEndTimeChange, onSeek])
 
-  const getRulerTicks = () => {
-    if (duration <= 0) return { major: [], minor: [] }
+  const { major, minor } = useMemo(() => {
+    if (duration <= 0) return { major: [] as { time: number; label: string }[], minor: [] as number[] }
     const majorTicks: { time: number; label: string }[] = []
     const minorTicks: number[] = []
     let majorInterval: number
@@ -120,13 +120,12 @@ export default function TimeBar({
       for (let j = 1; j < 5; j++) minorTicks.push(start + interval * j)
     }
     return { major: majorTicks, minor: minorTicks }
-  }
+  }, [duration])
 
   const safeDuration = duration > 0 ? duration : 1
   const startPercent = (startTime / safeDuration) * 100
   const endPercent = (endTime / safeDuration) * 100
   const currentPercent = (currentTime / safeDuration) * 100
-  const { major, minor } = getRulerTicks()
 
   const handlePlayheadMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()

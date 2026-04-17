@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import { requireSuperUser } from '@/lib/require-super-user-server'
+import { adminPatchMachineBodySchema } from '@/lib/validation/admin'
 
 type RouteContext = { params: Promise<{ machineId: string }> }
 
@@ -13,30 +15,25 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
   const { machineId } = await context.params
   if (!machineId) {
-    return NextResponse.json({ error: 'Missing machine id' }, { status: 400 })
+    return apiErrorResponse('Missing machine id', 400, { retryable: false })
   }
 
-  let body: { name?: string; active?: boolean }
+  let body: unknown
   try {
     body = await request.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return apiErrorResponse('Invalid JSON', 400, { retryable: false })
+  }
+
+  const parsed = adminPatchMachineBodySchema.safeParse(body)
+  if (!parsed.success) {
+    const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+    return apiErrorResponse(msg, 400, { retryable: false })
   }
 
   const updates: { name?: string; active?: boolean; updated_at?: string } = {}
-  if (typeof body.name === 'string') {
-    const n = body.name.trim()
-    if (!n) {
-      return NextResponse.json({ error: 'Name cannot be empty' }, { status: 400 })
-    }
-    updates.name = n
-  }
-  if (typeof body.active === 'boolean') {
-    updates.active = body.active
-  }
-  if (Object.keys(updates).length === 0) {
-    return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
-  }
+  if (parsed.data.name !== undefined) updates.name = parsed.data.name
+  if (parsed.data.active !== undefined) updates.active = parsed.data.active
   updates.updated_at = new Date().toISOString()
 
   const service = createServiceRoleClient()
@@ -49,15 +46,16 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
   if (error) {
     if (error.code === '23505') {
-      return NextResponse.json(
-        { error: 'A machine with this name already exists on that leg.' },
-        { status: 409 }
+      return apiErrorResponse(
+        'A machine with this name already exists on that leg.',
+        409,
+        { retryable: false }
       )
     }
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return apiErrorResponse(error.message, 500)
   }
   if (!data) {
-    return NextResponse.json({ error: 'Machine not found' }, { status: 404 })
+    return apiErrorResponse('Machine not found', 404, { retryable: false })
   }
 
   return NextResponse.json({ machine: data })
@@ -72,14 +70,14 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
 
   const { machineId } = await context.params
   if (!machineId) {
-    return NextResponse.json({ error: 'Missing machine id' }, { status: 400 })
+    return apiErrorResponse('Missing machine id', 400, { retryable: false })
   }
 
   const service = createServiceRoleClient()
   const { error } = await service.from('machines').delete().eq('id', machineId)
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return apiErrorResponse(error.message, 500)
   }
 
   return NextResponse.json({ deleted: machineId })

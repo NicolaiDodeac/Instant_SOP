@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useEffect, useMemo, useState } from 'react'
 import { formatSopDateTime } from '@/lib/format-date'
 import type { SopAuthorInfo, SopAuthorMeta } from '@/lib/types'
@@ -28,16 +29,26 @@ export function SopAuthorAvatar({
 }) {
   const label = author.displayName || author.email || 'Creator'
   const initials = useMemo(() => initialsFromLabel(label), [label])
+  const [imgFailed, setImgFailed] = useState(false)
 
-  if (author.avatarUrl) {
+  useEffect(() => {
+    setImgFailed(false)
+  }, [author.avatarUrl])
+
+  const showImg = Boolean(author.avatarUrl) && !imgFailed
+
+  if (showImg) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element -- remote Google / OAuth avatar URL
-      <img
-        src={author.avatarUrl}
+      <Image
+        src={author.avatarUrl!}
         alt=""
         width={size}
         height={size}
+        sizes={`${size}px`}
+        loading="lazy"
+        decoding="async"
         referrerPolicy="no-referrer"
+        onError={() => setImgFailed(true)}
         className={`rounded-full object-cover shrink-0 bg-gray-200 dark:bg-gray-600 ${className}`}
         style={{ width: size, height: size }}
       />

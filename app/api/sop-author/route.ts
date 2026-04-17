@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import { loadAuthorsById, loadSopAuthorMetaForViewer, metaFromSopRow } from '@/lib/server/sop-author-meta'
 import type { SopAuthorMeta } from '@/lib/types'
+import { z } from 'zod'
 
 type SopRow = {
   id: string
@@ -18,7 +20,7 @@ export async function GET(request: NextRequest) {
     const sopIdsParam = url.searchParams.get('sopIds')
 
     if (sopId && sopIdsParam) {
-      return NextResponse.json({ error: 'Use sopId or sopIds, not both' }, { status: 400 })
+      return apiErrorResponse('Use sopId or sopIds, not both', 400, { retryable: false })
     }
 
     const supabase = await createClientServer()
@@ -29,27 +31,40 @@ export async function GET(request: NextRequest) {
 
     if (sopId) {
       if (authError || !user) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        return apiErrorResponse('Unauthorized', 401, { retryable: false })
       }
 
-      const meta = await loadSopAuthorMetaForViewer(sopId)
+      const parsedSopId = z.string().uuid().safeParse(sopId)
+      if (!parsedSopId.success) {
+        return apiErrorResponse('Invalid sopId', 400, { retryable: false })
+      }
+
+      const meta = await loadSopAuthorMetaForViewer(parsedSopId.data)
       if (!meta) {
-        return NextResponse.json({ error: 'Not found' }, { status: 404 })
+        return apiErrorResponse('Not found', 404, { retryable: false })
       }
       return NextResponse.json(meta)
     }
 
     if (sopIdsParam) {
       if (authError || !user) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        return apiErrorResponse('Unauthorized', 401, { retryable: false })
       }
 
-      const ids = [...new Set(sopIdsParam.split(',').map((s) => s.trim()).filter(Boolean))].slice(
+      const rawIds = [...new Set(sopIdsParam.split(',').map((s) => s.trim()).filter(Boolean))].slice(
         0,
         40
       )
+      const ids: string[] = []
+      for (const id of rawIds) {
+        const p = z.string().uuid().safeParse(id)
+        if (!p.success) {
+          return apiErrorResponse('Invalid sopIds', 400, { retryable: false })
+        }
+        ids.push(p.data)
+      }
       if (ids.length === 0) {
-        return NextResponse.json({ error: 'Invalid sopIds' }, { status: 400 })
+        return apiErrorResponse('Invalid sopIds', 400, { retryable: false })
       }
 
       const { data: sops, error: sopsError } = await supabase
@@ -81,9 +96,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ authors: metas })
     }
 
-    return NextResponse.json({ error: 'Missing sopId or sopIds' }, { status: 400 })
+    return apiErrorResponse('Missing sopId or sopIds', 400, { retryable: false })
   } catch (e) {
     console.error('GET /api/sop-author error:', e)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return apiErrorResponse('Internal server error', 500)
   }
 }

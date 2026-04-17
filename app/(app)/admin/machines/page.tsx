@@ -4,6 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { formatMachineFamilyLabel } from '@/lib/format-machine-family'
 import type { Line, LineLeg, Machine, MachineFamily, MachineFamilyStation } from '@/lib/types'
+import {
+  adminCreateMachineBodySchema,
+  adminCreateMachineFamilyBodySchema,
+  adminCreateStationBodySchema,
+  adminPatchMachineBodySchema,
+  adminPatchMachineFamilyBodySchema,
+  adminPatchStationBodySchema,
+} from '@/lib/validation/admin'
+import { zodFirstIssueMessage } from '@/lib/validation/zod-helpers'
 
 type MachineWithFam = Machine & { machine_family?: MachineFamily }
 type LegWithMachines = LineLeg & { machines: MachineWithFam[] }
@@ -211,14 +220,19 @@ export default function AdminMachinesPage() {
     setCreatingCategory(true)
     setCreateCategoryError(null)
     try {
+      const catParsed = adminCreateMachineFamilyBodySchema.safeParse({
+        name: catName.trim(),
+        supplier: catSupplier.trim() || null,
+        uses_hmi_station_codes: catUsesHmi,
+      })
+      if (!catParsed.success) {
+        setCreateCategoryError(zodFirstIssueMessage(catParsed.error))
+        return
+      }
       const res = await fetch('/api/admin/machine-families', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: catName.trim(),
-          supplier: catSupplier.trim() || null,
-          uses_hmi_station_codes: catUsesHmi,
-        }),
+        body: JSON.stringify(catParsed.data),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -280,13 +294,18 @@ export default function AdminMachinesPage() {
     setSavingFamilyEdit(true)
     setFamilyListError(null)
     try {
+      const patchParsed = adminPatchMachineFamilyBodySchema.safeParse({
+        name: n,
+        supplier: editingFamilySupplier.trim() || null,
+      })
+      if (!patchParsed.success) {
+        setFamilyListError(zodFirstIssueMessage(patchParsed.error))
+        return
+      }
       const res = await fetch(`/api/admin/machine-families/${encodeURIComponent(familyId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: n,
-          supplier: editingFamilySupplier.trim() || null,
-        }),
+        body: JSON.stringify(patchParsed.data),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
@@ -327,15 +346,20 @@ export default function AdminMachinesPage() {
     setAddingStation(true)
     setStationsError(null)
     try {
+      const stationParsed = adminCreateStationBodySchema.safeParse({
+        station_code,
+        name,
+        section,
+        sort_order: null,
+      })
+      if (!stationParsed.success) {
+        setStationsError(zodFirstIssueMessage(stationParsed.error))
+        return
+      }
       const res = await fetch(`/api/admin/machine-families/${encodeURIComponent(familyId)}/stations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          station_code,
-          name,
-          section,
-          sort_order: null,
-        }),
+        body: JSON.stringify(stationParsed.data),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
@@ -414,12 +438,17 @@ export default function AdminMachinesPage() {
     setSavingStationEdit(true)
     setStationsError(null)
     try {
+      const patchStParsed = adminPatchStationBodySchema.safeParse(body)
+      if (!patchStParsed.success) {
+        setStationsError(zodFirstIssueMessage(patchStParsed.error))
+        return
+      }
       const res = await fetch(
         `/api/admin/machine-families/${encodeURIComponent(familyId)}/stations/${encodeURIComponent(editingStationId)}`,
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify(patchStParsed.data),
         }
       )
       const data = await res.json().catch(() => ({}))
@@ -443,15 +472,20 @@ export default function AdminMachinesPage() {
     setAdding(true)
     setAddError(null)
     try {
+      const machineParsed = adminCreateMachineBodySchema.safeParse({
+        line_leg_id: formLegId,
+        machine_family_id: formFamilyId,
+        name: formName.trim(),
+        code: null,
+      })
+      if (!machineParsed.success) {
+        setAddError(zodFirstIssueMessage(machineParsed.error))
+        return
+      }
       const res = await fetch('/api/admin/machines', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          line_leg_id: formLegId,
-          machine_family_id: formFamilyId,
-          name: formName.trim(),
-          code: null,
-        }),
+        body: JSON.stringify(machineParsed.data),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -496,10 +530,15 @@ export default function AdminMachinesPage() {
   async function handleToggleActive(machine: MachineWithFam, next: boolean) {
     setActionError(null)
     try {
+      const patchParsed = adminPatchMachineBodySchema.safeParse({ active: next })
+      if (!patchParsed.success) {
+        setActionError(zodFirstIssueMessage(patchParsed.error))
+        return
+      }
       const res = await fetch(`/api/admin/machines/${encodeURIComponent(machine.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ active: next }),
+        body: JSON.stringify(patchParsed.data),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
@@ -518,10 +557,15 @@ export default function AdminMachinesPage() {
     setSavingEdit(true)
     setActionError(null)
     try {
+      const patchParsed = adminPatchMachineBodySchema.safeParse({ name: n })
+      if (!patchParsed.success) {
+        setActionError(zodFirstIssueMessage(patchParsed.error))
+        return
+      }
       const res = await fetch(`/api/admin/machines/${encodeURIComponent(machineId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: n }),
+        body: JSON.stringify(patchParsed.data),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {

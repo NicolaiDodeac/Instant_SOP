@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { buildContextSopsFetchKey } from '@/lib/context-sops-query'
@@ -497,13 +498,13 @@ export default function OpsMachineClient({
                     <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
                       Tap QR to download image
                     </span>
-                    {/* eslint-disable-next-line @next/next/no-img-element -- dynamic API URL */}
-                    <img
+                    <Image
                       src={`/api/qr?url=${encodeURIComponent(machineShareUrl)}`}
                       alt=""
                       width={192}
                       height={192}
                       className="w-40 h-40 object-contain"
+                      unoptimized
                     />
                   </button>
                 ) : null}
@@ -549,13 +550,13 @@ export default function OpsMachineClient({
                     <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
                       Tap QR to download image
                     </span>
-                    {/* eslint-disable-next-line @next/next/no-img-element -- dynamic API URL */}
-                    <img
+                    <Image
                       src={`/api/qr?url=${encodeURIComponent(machineZoneContextUrl)}`}
                       alt=""
                       width={192}
                       height={192}
                       className="w-40 h-40 object-contain"
+                      unoptimized
                     />
                   </button>
                 </div>

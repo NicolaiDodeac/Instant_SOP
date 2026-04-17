@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer } from '@/lib/supabase/server'
+import { authSignInBodySchema } from '@/lib/validation/auth'
 
 const ALLOWED_DOMAIN = 'magna.co.uk'
 
@@ -10,21 +12,25 @@ const ALLOWED_DOMAIN = 'magna.co.uk'
  */
 export async function POST(request: NextRequest) {
   try {
-    const { email, password } = await request.json()
-
-    if (!email || !password) {
-      return NextResponse.json(
-        { error: 'Email and password are required' },
-        { status: 400 }
-      )
+    let body: unknown
+    try {
+      body = await request.json()
+    } catch {
+      return apiErrorResponse('Invalid request body', 400, { retryable: false })
     }
 
-    const emailLower = String(email).toLowerCase()
+    const parsed = authSignInBodySchema.safeParse(body)
+    if (!parsed.success) {
+      const flat = parsed.error.flatten()
+      const message = flat.fieldErrors.email?.[0] ?? flat.fieldErrors.password?.[0] ?? 'Invalid request'
+      return apiErrorResponse(message, 400, { retryable: false })
+    }
+
+    const { email: emailLower, password } = parsed.data
     if (!emailLower.endsWith(`@${ALLOWED_DOMAIN}`)) {
-      return NextResponse.json(
-        { error: `Only @${ALLOWED_DOMAIN} accounts can sign in.` },
-        { status: 403 }
-      )
+      return apiErrorResponse(`Only @${ALLOWED_DOMAIN} accounts can sign in.`, 403, {
+        retryable: false,
+      })
     }
 
     const supabase = await createClientServer()
@@ -42,19 +48,16 @@ export async function POST(request: NextRequest) {
       } else if (error.message.includes('Too many requests')) {
         message = 'Too many login attempts. Please wait a moment and try again.'
       }
-      return NextResponse.json({ error: message }, { status: 401 })
+      return apiErrorResponse(message, 401, { retryable: false })
     }
 
     if (!data.user) {
-      return NextResponse.json({ error: 'Login failed. Please try again.' }, { status: 500 })
+      return apiErrorResponse('Login failed. Please try again.', 500)
     }
 
     return NextResponse.json({ success: true, user: data.user })
   } catch (err) {
     console.error('Sign-in error:', err)
-    return NextResponse.json(
-      { error: 'An unexpected error occurred. Please try again.' },
-      { status: 500 }
-    )
+    return apiErrorResponse('An unexpected error occurred. Please try again.', 500)
   }
 }

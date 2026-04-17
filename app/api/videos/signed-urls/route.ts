@@ -1,9 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
 import { createClientServer } from '@/lib/supabase/server'
 import { presignGetForVideoPath } from '@/lib/presign-video-path'
+import { z } from 'zod'
 
 const MAX_PATHS = 64
+
+const signedUrlsBodySchema = z.object({
+  paths: z
+    .array(z.string().trim().min(1).max(2048))
+    .min(1)
+    .max(MAX_PATHS)
+    .superRefine((paths, ctx) => {
+      for (const [idx, p] of paths.entries()) {
+        if (p.includes('..')) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Invalid path',
+            path: [idx],
+          })
+        }
+      }
+    }),
+})
 
 /**
  * Batch presign for viewer pages: one round trip, same access checks as GET /api/videos/signed-url.
@@ -18,25 +38,20 @@ export async function POST(request: NextRequest) {
     const userId = user?.id ?? ''
     const isSuperUser = user?.id ? await resolveIsSuperUser(supabase, user.id) : false
 
-    let body: { paths?: unknown }
+    let body: unknown
     try {
       body = await request.json()
     } catch {
-      return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+      return apiErrorResponse('Invalid JSON', 400, { retryable: false })
     }
 
-    if (!Array.isArray(body.paths)) {
-      return NextResponse.json({ error: 'Expected paths array' }, { status: 400 })
+    const parsed = signedUrlsBodySchema.safeParse(body)
+    if (!parsed.success) {
+      const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+      return apiErrorResponse(msg, 400, { retryable: false })
     }
 
-    const raw = body.paths.filter((p): p is string => typeof p === 'string')
-    const unique = [...new Set(raw)]
-    if (unique.length > MAX_PATHS) {
-      return NextResponse.json(
-        { error: `At most ${MAX_PATHS} paths per request` },
-        { status: 400 }
-      )
-    }
+    const unique = [...new Set(parsed.data.paths)]
 
     const urls: Record<string, string | null> = {}
     await Promise.all(
@@ -51,6 +66,6 @@ export async function POST(request: NextRequest) {
     if (process.env.NODE_ENV === 'development') {
       console.error('Error in signed-urls:', error)
     }
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return apiErrorResponse('Internal server error', 500)
   }
 }

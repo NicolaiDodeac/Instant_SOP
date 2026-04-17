@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import { requireSuperUser } from '@/lib/require-super-user-server'
 import type { MachineFamilyStation } from '@/lib/types'
+import { adminCreateStationBodySchema } from '@/lib/validation/admin'
 
 type RouteContext = { params: Promise<{ familyId: string }> }
 
@@ -14,7 +16,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
 
   const { familyId } = await context.params
   if (!familyId) {
-    return NextResponse.json({ error: 'Missing family id' }, { status: 400 })
+    return apiErrorResponse('Missing family id', 400, { retryable: false })
   }
 
   const service = createServiceRoleClient()
@@ -26,7 +28,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     .order('station_code', { ascending: true })
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return apiErrorResponse(error.message, 500)
   }
 
   return NextResponse.json({ stations: (data ?? []) as MachineFamilyStation[] })
@@ -41,40 +43,23 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
   const { familyId } = await context.params
   if (!familyId) {
-    return NextResponse.json({ error: 'Missing family id' }, { status: 400 })
+    return apiErrorResponse('Missing family id', 400, { retryable: false })
   }
 
-  let body: {
-    station_code?: number
-    name?: string
-    section?: string
-    sort_order?: number | null
-  }
+  let body: unknown
   try {
     body = await request.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return apiErrorResponse('Invalid JSON', 400, { retryable: false })
   }
 
-  const station_code =
-    typeof body.station_code === 'number' && Number.isInteger(body.station_code)
-      ? body.station_code
-      : NaN
-  const name = typeof body.name === 'string' ? body.name.trim() : ''
-  const section = typeof body.section === 'string' ? body.section.trim() : ''
-  const sort_order =
-    body.sort_order === null || body.sort_order === undefined
-      ? null
-      : typeof body.sort_order === 'number' && Number.isFinite(body.sort_order)
-        ? Math.trunc(body.sort_order)
-        : null
-
-  if (!Number.isFinite(station_code) || !name || !section) {
-    return NextResponse.json(
-      { error: 'Missing or invalid station_code, name, or section' },
-      { status: 400 }
-    )
+  const parsed = adminCreateStationBodySchema.safeParse(body)
+  if (!parsed.success) {
+    const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+    return apiErrorResponse(msg, 400, { retryable: false })
   }
+
+  const { station_code, name, section, sort_order } = parsed.data
 
   const service = createServiceRoleClient()
   const { data: inserted, error: insertError } = await service
@@ -92,12 +77,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
   if (insertError) {
     if (insertError.code === '23505') {
-      return NextResponse.json(
-        { error: 'This station code already exists for this machine type.' },
-        { status: 409 }
+      return apiErrorResponse(
+        'This station code already exists for this machine type.',
+        409,
+        { retryable: false }
       )
     }
-    return NextResponse.json({ error: insertError.message }, { status: 500 })
+    return apiErrorResponse(insertError.message, 500)
   }
 
   return NextResponse.json({ station: inserted as MachineFamilyStation })

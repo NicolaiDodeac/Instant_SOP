@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import { requireSuperUser } from '@/lib/require-super-user-server'
+import { adminPatchMachineFamilyBodySchema } from '@/lib/validation/admin'
 
 type RouteContext = { params: Promise<{ familyId: string }> }
 
@@ -13,33 +15,33 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
   const { familyId } = await context.params
   if (!familyId) {
-    return NextResponse.json({ error: 'Missing family id' }, { status: 400 })
+    return apiErrorResponse('Missing family id', 400, { retryable: false })
   }
 
-  let body: { name?: string; supplier?: string | null }
+  let body: unknown
   try {
     body = await request.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return apiErrorResponse('Invalid JSON', 400, { retryable: false })
+  }
+
+  const parsed = adminPatchMachineFamilyBodySchema.safeParse(body)
+  if (!parsed.success) {
+    const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+    return apiErrorResponse(msg, 400, { retryable: false })
   }
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (typeof body.name === 'string') {
-    const n = body.name.trim()
-    if (!n) {
-      return NextResponse.json({ error: 'Name cannot be empty' }, { status: 400 })
-    }
-    updates.name = n
-  }
-  if (body.supplier === null) {
+  if (parsed.data.name !== undefined) updates.name = parsed.data.name
+  if (parsed.data.supplier === null) {
     updates.supplier = null
-  } else if (typeof body.supplier === 'string') {
-    updates.supplier = body.supplier.trim() || null
+  } else if (parsed.data.supplier !== undefined) {
+    updates.supplier = parsed.data.supplier.trim() || null
   }
 
   const payloadKeys = Object.keys(updates).filter((k) => k !== 'updated_at')
   if (payloadKeys.length === 0) {
-    return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
+    return apiErrorResponse('No valid fields to update', 400, { retryable: false })
   }
 
   const service = createServiceRoleClient()
@@ -51,10 +53,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     .maybeSingle()
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return apiErrorResponse(error.message, 500)
   }
   if (!data) {
-    return NextResponse.json({ error: 'Machine type not found' }, { status: 404 })
+    return apiErrorResponse('Machine type not found', 404, { retryable: false })
   }
 
   return NextResponse.json({ machineFamily: data })
@@ -69,7 +71,7 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
 
   const { familyId } = await context.params
   if (!familyId) {
-    return NextResponse.json({ error: 'Missing family id' }, { status: 400 })
+    return apiErrorResponse('Missing family id', 400, { retryable: false })
   }
 
   const service = createServiceRoleClient()
@@ -77,15 +79,13 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
 
   if (error) {
     if (error.code === '23503') {
-      return NextResponse.json(
-        {
-          error:
-            'Cannot delete: machines or other records still use this type. Remove those machines first.',
-        },
-        { status: 409 }
+      return apiErrorResponse(
+        'Cannot delete: machines or other records still use this type. Remove those machines first.',
+        409,
+        { retryable: false }
       )
     }
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return apiErrorResponse(error.message, 500)
   }
 
   return NextResponse.json({ deleted: familyId })

@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import type { RefObject } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { SOPStep, StepAnnotation } from '@/lib/types'
 import StepPlayer from '@/components/StepPlayer'
 import TextStepCanvas from '@/components/TextStepCanvas'
@@ -27,16 +28,20 @@ interface StepCardProps {
   totalSteps: number
   /** Parent sets true for at most one step: highest viewport intersection ratio ≥ 75%. */
   playbackActive: boolean
-  /** Report intersection ratio (0–1) vs viewport; parent picks the single active step. */
-  onIntersectionRatio: (ratio: number) => void
+  /** Report intersection ratio (0–1) vs scroll root; parent picks the single active step. Stable ref recommended. */
+  onStepIntersection?: (stepId: string, ratio: number) => void
   /**
    * When false, step may still have video_path/image_path but signed URLs are not ready yet.
    * Avoid showing "no media" during that window (defaults true for standalone use).
    */
   mediaSignedUrlsReady?: boolean
+  /** Public viewer: snap-scrolling region — use as IntersectionObserver root (not the window). */
+  intersectionRootRef?: RefObject<HTMLElement | null>
+  /** Public viewer: fill snap page height instead of min-h-screen. */
+  snapLayout?: boolean
 }
 
-export default function StepCard({
+function StepCard({
   step,
   annotations,
   videoUrl,
@@ -45,8 +50,10 @@ export default function StepCard({
   stepNumber,
   totalSteps,
   playbackActive,
-  onIntersectionRatio,
+  onStepIntersection,
   mediaSignedUrlsReady = true,
+  intersectionRootRef,
+  snapLayout = false,
 }: StepCardProps) {
   const primary = stepPrimaryText(step)
   const isTextStep = step.kind === 'text'
@@ -56,8 +63,11 @@ export default function StepCard({
   const [startTime, setStartTime] = useState(0)
   const [endTime, setEndTime] = useState(0)
   const cardRef = useRef<HTMLDivElement>(null)
-  const onRatioRef = useRef(onIntersectionRatio)
-  onRatioRef.current = onIntersectionRatio
+  const onStepIntersectionRef = useRef(onStepIntersection)
+  onStepIntersectionRef.current = onStepIntersection
+
+  /** Lazy-mount heavy StepPlayer until near viewport (public long SOPs). First steps load eagerly. */
+  const [mediaMounted, setMediaMounted] = useState(() => stepNumber <= 2)
 
   // Set time range from annotations
   useEffect(() => {
@@ -76,15 +86,17 @@ export default function StepCard({
     const card = cardRef.current
     if (!card) return
 
+    const root = intersectionRootRef?.current ?? null
+
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0]
         const ratio = entry.isIntersecting ? entry.intersectionRatio : 0
-        onRatioRef.current(ratio)
+        onStepIntersectionRef.current?.(step.id, ratio)
       },
       {
         threshold: Array.from({ length: 21 }, (_, i) => i / 20),
-        root: null,
+        root,
         rootMargin: '0px',
       }
     )
@@ -94,12 +106,34 @@ export default function StepCard({
     return () => {
       observer.disconnect()
     }
-  }, [videoUrl, imageUrl, stepNumber])
+  }, [step.id, videoUrl, imageUrl, stepNumber, intersectionRootRef])
+
+  // Defer mounting StepPlayer until the card is near the scrollport (separate from ratio observer above).
+  useEffect(() => {
+    if (mediaMounted) return
+    const card = cardRef.current
+    if (!card) return
+    const root = intersectionRootRef?.current ?? null
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) setMediaMounted(true)
+      },
+      {
+        root,
+        rootMargin: '80% 0px 80% 0px',
+        threshold: 0,
+      }
+    )
+    observer.observe(card)
+    return () => observer.disconnect()
+  }, [mediaMounted, intersectionRootRef, videoUrl, imageUrl, stepNumber])
 
   return (
     <div
       ref={cardRef}
-      className="w-full min-h-screen flex flex-col bg-gray-50 dark:bg-gray-900"
+      className={`w-full flex flex-col bg-gray-50 dark:bg-gray-900 ${
+        snapLayout ? 'min-h-full flex-1' : 'min-h-screen'
+      }`}
     >
       {/* Step badge + description (same row as editor; number from position) */}
       <div className="border-b border-gray-200 bg-white py-3.5 dark:border-gray-700 dark:bg-gray-800">
@@ -124,27 +158,36 @@ export default function StepCard({
             <TextStepCanvas payload={step.text_payload ?? null} />
           </div>
         ) : hasMediaUrl ? (
-          <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
-            <StepPlayer
-              videoUrl={videoUrl}
-              imageUrl={imageUrl}
-              posterUrl={posterUrl}
-              videoPreload={playbackActive || stepNumber === 1 ? 'auto' : 'metadata'}
-              annotations={annotations}
-              currentTime={currentTime}
-              startTime={startTime}
-              endTime={endTime}
-              onAnnotationUpdate={() => {}}
-              onAnnotationDelete={() => {}}
-              selectedAnnotationId={null}
-              onSelectAnnotation={() => {}}
-              onTimeUpdate={setCurrentTime}
-              showControls={true}
-              autoPlay={playbackActive && !!videoUrl}
-              filterAnnotationsByTime={true}
-              showRestartButton={!!videoUrl}
-            />
-          </div>
+          mediaMounted ? (
+            <div className="w-full rounded-lg overflow-hidden shadow-lg bg-black">
+              <StepPlayer
+                videoUrl={videoUrl}
+                imageUrl={imageUrl}
+                posterUrl={posterUrl}
+                videoPreload={playbackActive || stepNumber === 1 ? 'auto' : 'metadata'}
+                annotations={annotations}
+                currentTime={currentTime}
+                startTime={startTime}
+                endTime={endTime}
+                onAnnotationUpdate={() => {}}
+                onAnnotationDelete={() => {}}
+                selectedAnnotationId={null}
+                onSelectAnnotation={() => {}}
+                onTimeUpdate={setCurrentTime}
+                showControls={true}
+                autoPlay={playbackActive && !!videoUrl}
+                filterAnnotationsByTime={true}
+                showRestartButton={!!videoUrl}
+              />
+            </div>
+          ) : (
+            <div
+              className="relative flex w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto aspect-[9/16] max-h-[78dvh] min-h-[200px] md:max-h-[85vh] items-center justify-center rounded-lg overflow-hidden shadow-lg bg-black md:mx-auto"
+              aria-hidden
+            >
+              <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/20 border-t-white/70" />
+            </div>
+          )
         ) : stepExpectsMedia && !mediaSignedUrlsReady ? (
           <div
             className="relative flex w-full max-w-[min(100%,calc(100dvh*9/16))] mx-auto aspect-[9/16] max-h-[78dvh] min-h-[200px] items-center justify-center rounded-lg bg-gray-900 md:max-h-[85vh]"
@@ -182,3 +225,5 @@ export default function StepCard({
     </div>
   )
 }
+
+export default memo(StepCard)

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import {
   buildSopListTitleSearchFilter,
   parseSopListPageParams,
@@ -16,12 +17,12 @@ export async function GET(request: NextRequest) {
       error: authError,
     } = await supabase.auth.getUser()
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return apiErrorResponse('Unauthorized', 401, { retryable: false })
     }
 
     const { isEditor, isSuperUser } = await resolveEditorFlags(supabase, user.id)
     if (!isEditor) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      return apiErrorResponse('Forbidden', 403, { retryable: false })
     }
 
     const url = request.nextUrl
@@ -50,7 +51,7 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       console.error('GET /api/editor/sops:', error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return apiErrorResponse(error.message, 500)
     }
 
     const rows = (data ?? []) as SOP[]
@@ -69,6 +70,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ items, hasMore, totalSops })
   } catch (e) {
     console.error('GET /api/editor/sops error:', e)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return apiErrorResponse('Internal server error', 500)
   }
 }

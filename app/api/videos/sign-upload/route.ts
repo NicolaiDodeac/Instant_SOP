@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer } from '@/lib/supabase/server'
 import { presignPutObject } from '@/lib/r2'
+import { videoSignUploadBodySchema } from '@/lib/validation/video-edit'
 
 /** Allow UUID or nanoid (alphanumeric + hyphens). No path traversal. */
 function isValidSegment(s: string): boolean {
@@ -14,61 +16,60 @@ export async function POST(request: NextRequest) {
     const { data: { user }, error: authError } = await supabase.auth.getUser()
 
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return apiErrorResponse('Unauthorized', 401, { retryable: false })
     }
 
-    const body = await request.json()
-    const { filename, contentType, sopId, stepId, file, videoContentType, imageContentType } =
-      body as {
-        filename?: string
-        contentType?: string
-        sopId?: string
-        stepId?: string
-        file?: 'video' | 'thumbnail' | 'image'
-        /** Must match the Content-Type header on the browser PUT to R2 (SigV4). */
-        videoContentType?: string
-        /** For file=image — must match the PUT Content-Type (e.g. image/jpeg, image/png). */
-        imageContentType?: string
-      }
+    let body: unknown
+    try {
+      body = await request.json()
+    } catch {
+      return apiErrorResponse('Invalid JSON', 400, { retryable: false })
+    }
+
+    const parsed = videoSignUploadBodySchema.safeParse(body)
+    if (!parsed.success) {
+      return apiErrorResponse('Invalid request body', 400, { retryable: false })
+    }
 
     let storagePath: string
     let putContentType: string | undefined
 
     // New: structured path userId/sopId/stepId/video.mp4, thumbnail.jpg, or image.jpg
-    if (sopId != null && stepId != null && file === 'video') {
+    if ('file' in parsed.data && parsed.data.file === 'video') {
+      const { sopId, stepId, videoContentType } = parsed.data
       if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
-        return NextResponse.json(
-          { error: 'Invalid sopId or stepId for video upload.' },
-          { status: 400 }
-        )
+        return apiErrorResponse('Invalid sopId or stepId for video upload.', 400, {
+          retryable: false,
+        })
       }
       storagePath = `${user.id}/${sopId}/${stepId}/video.mp4`
       putContentType =
         typeof videoContentType === 'string' && videoContentType.startsWith('video/')
           ? videoContentType
           : 'video/mp4'
-    } else if (sopId != null && stepId != null && file === 'thumbnail') {
+    } else if ('file' in parsed.data && parsed.data.file === 'thumbnail') {
+      const { sopId, stepId } = parsed.data
       if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
-        return NextResponse.json(
-          { error: 'Invalid sopId or stepId for thumbnail upload.' },
-          { status: 400 }
-        )
+        return apiErrorResponse('Invalid sopId or stepId for thumbnail upload.', 400, {
+          retryable: false,
+        })
       }
       storagePath = `${user.id}/${sopId}/${stepId}/thumbnail.jpg`
       putContentType = 'image/jpeg'
-    } else if (sopId != null && stepId != null && file === 'image') {
+    } else if ('file' in parsed.data && parsed.data.file === 'image') {
+      const { sopId, stepId, imageContentType } = parsed.data
       if (!isValidSegment(sopId) || !isValidSegment(stepId)) {
-        return NextResponse.json(
-          { error: 'Invalid sopId or stepId for image upload.' },
-          { status: 400 }
-        )
+        return apiErrorResponse('Invalid sopId or stepId for image upload.', 400, {
+          retryable: false,
+        })
       }
       storagePath = `${user.id}/${sopId}/${stepId}/image.jpg`
       putContentType =
         typeof imageContentType === 'string' && imageContentType.startsWith('image/')
           ? imageContentType
           : 'image/jpeg'
-    } else if (filename && contentType) {
+    } else if ('filename' in parsed.data) {
+      const { filename, contentType } = parsed.data
       // Legacy: single filename (userId/filename)
       if (
         !filename.endsWith('.mp4') ||
@@ -77,17 +78,19 @@ export async function POST(request: NextRequest) {
         filename.includes('..') ||
         filename.length > 255
       ) {
-        return NextResponse.json(
-          { error: 'Invalid filename format. Must be a .mp4 file with no path separators.' },
-          { status: 400 }
+        return apiErrorResponse(
+          'Invalid filename format. Must be a .mp4 file with no path separators.',
+          400,
+          { retryable: false }
         )
       }
       storagePath = `${user.id}/${filename}`
       putContentType = contentType
     } else {
-      return NextResponse.json(
-        { error: 'Missing (filename + contentType) or (sopId + stepId + file).' },
-        { status: 400 }
+      return apiErrorResponse(
+        'Missing (filename + contentType) or (sopId + stepId + file).',
+        400,
+        { retryable: false }
       )
     }
 
@@ -100,9 +103,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Error in sign-upload:', error)
     const message = error instanceof Error ? error.message : 'Internal server error'
-    return NextResponse.json(
-      { error: message },
-      { status: 500 }
-    )
+    return apiErrorResponse(message, 500)
   }
 }

@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
 import { querySopRoutingAttachments } from '@/lib/server/sop-attachments-read'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import type { SopRoutingAttachments } from '@/lib/types'
+import { z } from 'zod'
+
+const uuidSchema = z.string().uuid()
+
+const sopRoutingAttachmentsPutSchema = z.object({
+  trainingModuleIds: z.array(uuidSchema).max(500).optional().default([]),
+  machineFamilyIds: z.array(uuidSchema).max(500).optional().default([]),
+  stationIds: z.array(uuidSchema).max(500).optional().default([]),
+  lineIds: z.array(uuidSchema).max(500).optional().default([]),
+  lineLegIds: z.array(uuidSchema).max(500).optional().default([]),
+  machineIds: z.array(uuidSchema).max(500).optional().default([]),
+})
 
 export async function GET(
   _request: NextRequest,
@@ -17,17 +30,17 @@ export async function GET(
     } = await supabase.auth.getUser()
 
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return apiErrorResponse('Unauthorized', 401, { retryable: false })
     }
 
     const service = createServiceRoleClient()
     const payload = await querySopRoutingAttachments(service, sopId)
-    if (!payload) return NextResponse.json({ error: 'SOP not found' }, { status: 404 })
+    if (!payload) return apiErrorResponse('SOP not found', 404, { retryable: false })
 
     return NextResponse.json(payload)
   } catch (err) {
     console.error('GET /api/sops/[sopId]/attachments error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return apiErrorResponse('Internal server error', 500)
   }
 }
 
@@ -44,28 +57,33 @@ export async function PUT(
     } = await supabase.auth.getUser()
 
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return apiErrorResponse('Unauthorized', 401, { retryable: false })
     }
 
-    const body = (await request.json()) as Partial<SopRoutingAttachments>
-    const next: SopRoutingAttachments = {
-      trainingModuleIds: body.trainingModuleIds ?? [],
-      machineFamilyIds: body.machineFamilyIds ?? [],
-      stationIds: body.stationIds ?? [],
-      lineIds: body.lineIds ?? [],
-      lineLegIds: body.lineLegIds ?? [],
-      machineIds: body.machineIds ?? [],
+    let body: unknown
+    try {
+      body = await request.json()
+    } catch {
+      return apiErrorResponse('Invalid JSON', 400, { retryable: false })
     }
+
+    const parsed = sopRoutingAttachmentsPutSchema.safeParse(body)
+    if (!parsed.success) {
+      const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+      return apiErrorResponse(msg, 400, { retryable: false })
+    }
+
+    const next: SopRoutingAttachments = parsed.data
 
     const service = createServiceRoleClient()
     const { data: sop } = await service.from('sops').select('owner').eq('id', sopId).single()
-    if (!sop) return NextResponse.json({ error: 'SOP not found' }, { status: 404 })
+    if (!sop) return apiErrorResponse('SOP not found', 404, { retryable: false })
 
     const ownerId = String((sop as { owner: string }).owner)
     const superUser = await resolveIsSuperUser(service, user.id)
     const canEdit = ownerId === user.id || superUser
     if (!canEdit) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      return apiErrorResponse('Forbidden', 403, { retryable: false })
     }
 
     await Promise.all([
@@ -109,6 +127,6 @@ export async function PUT(
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('PUT /api/sops/[sopId]/attachments error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return apiErrorResponse('Internal server error', 500)
   }
 }

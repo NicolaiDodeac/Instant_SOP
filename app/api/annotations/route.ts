@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
+import { annotationCreateBodySchema } from '@/lib/validation/annotations'
 
 /** POST: create a step_annotations row. Uses server auth + ownership/super-user check, then service-role insert so RLS is not blocking. */
 export async function POST(request: NextRequest) {
@@ -9,35 +11,23 @@ export async function POST(request: NextRequest) {
     const { data: { user }, error: authError } = await supabase.auth.getUser()
 
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return apiErrorResponse('Unauthorized', 401, { retryable: false })
     }
 
-    const body = await request.json()
-    const {
-      step_id,
-      t_start_ms,
-      t_end_ms,
-      kind,
-      x,
-      y,
-      angle,
-      text,
-      style,
-    } = body
-
-    if (
-      typeof step_id !== 'string' ||
-      typeof t_start_ms !== 'number' ||
-      typeof t_end_ms !== 'number' ||
-      kind !== 'arrow' && kind !== 'label' ||
-      typeof x !== 'number' ||
-      typeof y !== 'number'
-    ) {
-      return NextResponse.json(
-        { error: 'Invalid body: need step_id, t_start_ms, t_end_ms, kind, x, y' },
-        { status: 400 }
-      )
+    let body: unknown
+    try {
+      body = await request.json()
+    } catch {
+      return apiErrorResponse('Invalid JSON', 400, { retryable: false })
     }
+
+    const parsed = annotationCreateBodySchema.safeParse(body)
+    if (!parsed.success) {
+      const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+      return apiErrorResponse(msg, 400, { retryable: false })
+    }
+
+    const { step_id, t_start_ms, t_end_ms, kind, x, y, angle, text, style } = parsed.data
 
     const service = createServiceRoleClient()
 
@@ -49,7 +39,7 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (stepError || !step) {
-      return NextResponse.json({ error: 'Step not found' }, { status: 404 })
+      return apiErrorResponse('Step not found', 404, { retryable: false })
     }
 
     const { data: sop } = await service
@@ -62,9 +52,10 @@ export async function POST(request: NextRequest) {
     const isSuperUser = await resolveIsSuperUser(service, user.id)
 
     if (!isOwner && !isSuperUser) {
-      return NextResponse.json(
-        { error: 'Forbidden: only the SOP owner or a super user can add annotations' },
-        { status: 403 }
+      return apiErrorResponse(
+        'Forbidden: only the SOP owner or a super user can add annotations',
+        403,
+        { retryable: false }
       )
     }
 
@@ -88,18 +79,12 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error('Annotation insert error:', insertError)
-      return NextResponse.json(
-        { error: insertError.message ?? 'Insert failed' },
-        { status: 500 }
-      )
+      return apiErrorResponse(insertError.message ?? 'Insert failed', 500)
     }
 
     return NextResponse.json(inserted)
   } catch (err) {
     console.error('POST /api/annotations error:', err)
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Server error' },
-      { status: 500 }
-    )
+    return apiErrorResponse(err instanceof Error ? err.message : 'Server error', 500)
   }
 }

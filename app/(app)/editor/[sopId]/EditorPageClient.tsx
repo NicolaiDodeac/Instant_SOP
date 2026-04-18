@@ -1,24 +1,10 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import dynamic from 'next/dynamic'
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { useSupabaseClient } from '@/lib/supabase/client'
 import type { SOP, SOPStep, StepAnnotation, DraftSOP, DraftStep } from '@/lib/types'
-import {
-  DndContext,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from '@dnd-kit/core'
-import {
-  SortableContext,
-  useSortable,
-  horizontalListSortingStrategy,
-  arrayMove,
-} from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
 import {
   saveDraft,
   getDraft,
@@ -32,7 +18,6 @@ import {
   deleteImageBlob,
   saveImageBlob,
 } from '@/lib/idb'
-import { compressVideoWithMediabunny } from '@/lib/video-compress-mediabunny'
 import { generateThumbnail } from '@/lib/thumbnail'
 import {
   isVideoCutAsync,
@@ -41,9 +26,40 @@ import {
 } from '@/lib/feature-flags'
 import { formatMachineFamilyLabel } from '@/lib/format-machine-family'
 import { fetchSignedMediaUrl } from '@/lib/fetch-signed-urls'
+import { annotationCreateBodySchema } from '@/lib/validation/annotations'
+import { sopSyncPutBodySchema } from '@/lib/validation/sop-sync'
+import {
+  videoCutBodySchema,
+  videoSignUploadBodySchema,
+  videoSpeedBodySchema,
+} from '@/lib/validation/video-edit'
+import { zodFirstIssueMessage } from '@/lib/validation/zod-helpers'
+import { userFacingSyncSaveError, userFacingUploadError } from '@/lib/user-facing-errors'
+import { fetchWithRetry, signUploadPutBlob } from '@/lib/upload-reliable'
 import { nanoid } from 'nanoid'
 import Image from 'next/image'
-import VideoCapture from '@/components/VideoCapture'
+
+const VideoCapture = dynamic(() => import('@/components/VideoCapture'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full aspect-video bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+      Loading camera…
+    </div>
+  ),
+})
+
+const EditorStepChipsBar = dynamic(() => import('@/components/editor/EditorStepChipsBar'), {
+  loading: () => (
+    <div className="py-2" aria-busy>
+      <div className="h-10 max-w-md rounded-lg bg-gray-100 dark:bg-gray-800 animate-pulse" />
+    </div>
+  ),
+})
+import {
+  EDITOR_SOP_COLUMNS,
+  EDITOR_SOP_STEP_COLUMNS,
+  EDITOR_STEP_ANNOTATION_COLUMNS,
+} from '@/lib/editor-sop-load-columns'
 import { linesTreeForEditorRouting, routingKeyFromIds } from '@/lib/editor-routing-lines'
 import type {
   ContextTreePayload,
@@ -85,54 +101,6 @@ function renumberSteps(ordered: SOPStep[]): SOPStep[] {
 
 function renumberDraftSteps(ordered: DraftStep[]): DraftStep[] {
   return ordered.map((s, i) => ({ ...s, idx: i, title: `Step ${i + 1}` }))
-}
-
-function SortableStepChip({
-  id,
-  label,
-  active,
-  reorderMode,
-  disabled,
-  onClick,
-}: {
-  id: string
-  label: string
-  active: boolean
-  reorderMode: boolean
-  disabled: boolean
-  onClick: () => void
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id, disabled: !reorderMode || disabled })
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.6 : 1,
-    touchAction: reorderMode ? 'none' : 'manipulation',
-  }
-
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      onClick={onClick}
-      className={`px-3 py-1.5 rounded-lg touch-target whitespace-nowrap text-sm no-select ${
-        active
-          ? 'bg-blue-600 text-white'
-          : 'bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-gray-100'
-      } ${reorderMode ? 'cursor-grab active:cursor-grabbing' : ''} ${
-        disabled ? 'opacity-60 cursor-not-allowed' : ''
-      }`}
-      style={style}
-      aria-label={label}
-      {...attributes}
-      {...listeners}
-      disabled={disabled}
-    >
-      {label}
-    </button>
-  )
 }
 
 /** IndexedDB draft has edits that were never saved with PUT /sync (or legacy draft newer than server). */
@@ -204,6 +172,10 @@ export default function EditorPageClient({
   const [stepUploadProgress, setStepUploadProgress] = useState<Record<string, number>>({})
   const [stepUploadResult, setStepUploadResult] = useState<Record<string, 'compressed' | 'original' | null>>({})
   const [stepUploadSizes, setStepUploadSizes] = useState<Record<string, { before: number; after: number } | null>>({})
+  /** Latest automatic retry attempt while uploading (unstable Wi‑Fi) */
+  const [stepUploadRetryAttempt, setStepUploadRetryAttempt] = useState<Record<string, number>>({})
+  /** User-facing reason after upload ultimately fails (network, expired URL, etc.) */
+  const [stepUploadErrorMessage, setStepUploadErrorMessage] = useState<Record<string, string>>({})
   const [cutMode, setCutMode] = useState(false)
   const [cutProgress, setCutProgress] = useState<number | null>(null)
   const [cutError, setCutError] = useState<string | null>(null)
@@ -576,7 +548,7 @@ export default function EditorPageClient({
       // Try to load from server
       const { data: sopData, error: sopError } = await supabase
         .from('sops')
-        .select('*')
+        .select(EDITOR_SOP_COLUMNS)
         .eq('id', sopId)
         .single()
 
@@ -673,7 +645,7 @@ export default function EditorPageClient({
         // Load steps
         const { data: stepsData } = await supabase
           .from('sop_steps')
-          .select('*')
+          .select(EDITOR_SOP_STEP_COLUMNS)
           .eq('sop_id', sopId)
           .order('idx', { ascending: true })
 
@@ -689,7 +661,7 @@ export default function EditorPageClient({
           const stepIds = stepsData.map((s: SOPStep) => s.id)
           const { data: annsData } = await supabase
             .from('step_annotations')
-            .select('*')
+            .select(EDITOR_STEP_ANNOTATION_COLUMNS)
             .in('step_id', stepIds)
 
           if (annsData) {
@@ -791,29 +763,6 @@ export default function EditorPageClient({
     setReorderOrderIds(null)
   }, [steps.length, sopId])
 
-  const dndSensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { delay: 350, tolerance: 8 },
-    })
-  )
-
-  function orderedStepsForChips(): SOPStep[] {
-    if (!reorderMode || !reorderOrderIds) return steps
-    const byId = new Map(steps.map((s) => [s.id, s]))
-    const ordered = reorderOrderIds.map((id) => byId.get(id)).filter((s): s is SOPStep => !!s)
-    // If something went out of sync, fall back to current steps.
-    return ordered.length === steps.length ? ordered : steps
-  }
-
-  function handleReorderDragEnd(event: DragEndEvent) {
-    const { active, over } = event
-    if (!over || active.id === over.id) return
-    const ids = reorderOrderIds ?? steps.map((s) => s.id)
-    const oldIndex = ids.findIndex((id) => id === String(active.id))
-    const newIndex = ids.findIndex((id) => id === String(over.id))
-    if (oldIndex < 0 || newIndex < 0) return
-    setReorderOrderIds(arrayMove(ids, oldIndex, newIndex))
-  }
   async function finishReorderMode(apply: boolean) {
     if (!apply || !reorderOrderIds) {
       setReorderMode(false)
@@ -964,27 +913,32 @@ export default function EditorPageClient({
 
     try {
       const imageCt = blob.type?.startsWith('image/') ? blob.type : 'image/jpeg'
-      const signRes = await fetch('/api/videos/sign-upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sopId,
-          stepId: currentStepId,
-          file: 'image' as const,
-          imageContentType: imageCt,
-        }),
-      })
-      if (!signRes.ok) throw new Error('Failed to get image upload URL')
-      const { signedUrl, storagePath } = (await signRes.json()) as {
-        signedUrl: string
-        storagePath: string
+      const signBody = {
+        sopId,
+        stepId: currentStepId,
+        file: 'image' as const,
+        imageContentType: imageCt,
       }
-      const putRes = await fetch(signedUrl, {
-        method: 'PUT',
-        body: blob,
-        headers: { 'Content-Type': imageCt },
+      const signParsed = videoSignUploadBodySchema.safeParse(signBody)
+      if (!signParsed.success) {
+        throw new Error(zodFirstIssueMessage(signParsed.error))
+      }
+      const { storagePath } = await signUploadPutBlob({
+        signBody: signParsed.data as Record<string, unknown>,
+        blob,
+        putContentType: imageCt,
+        onRetry: ({ attempt }) => {
+          setStepUploadRetryAttempt((prev) => ({
+            ...prev,
+            [currentStepId]: Math.max(prev[currentStepId] ?? 0, attempt),
+          }))
+        },
       })
-      if (!putRes.ok) throw new Error('Image upload failed')
+      setStepUploadRetryAttempt((prev) => {
+        const next = { ...prev }
+        delete next[currentStepId]
+        return next
+      })
 
       await markImageUploaded(currentStepId)
       setSteps((prev) =>
@@ -1008,6 +962,12 @@ export default function EditorPageClient({
       }
     } catch (err) {
       console.error('Error uploading image:', err)
+      alert(userFacingUploadError(err, 'image'))
+      setStepUploadRetryAttempt((prev) => {
+        const next = { ...prev }
+        if (currentStepId) delete next[currentStepId]
+        return next
+      })
       loadLocalImage()
     }
   }
@@ -1033,19 +993,28 @@ export default function EditorPageClient({
     const t = currentTime
 
     try {
+      const cutBody = {
+        sopId,
+        stepId,
+        startMs: cutStartMs,
+        endMs: cutEndMs,
+        ...(currentStep.video_path ? { videoPath: currentStep.video_path } : {}),
+        ...(isVideoCutAsync ? { async: true as const } : {}),
+      }
+      const cutParsed = videoCutBodySchema.safeParse(cutBody)
+      if (!cutParsed.success) {
+        throw new Error(zodFirstIssueMessage(cutParsed.error))
+      }
       // Server-side cut (native ffmpeg). Optional async job + poll on Vercel for long runs.
-      const res = await fetch('/api/videos/cut', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sopId,
-          stepId,
-          startMs: cutStartMs,
-          endMs: cutEndMs,
-          ...(currentStep.video_path ? { videoPath: currentStep.video_path } : {}),
-          ...(isVideoCutAsync ? { async: true } : {}),
-        }),
-      })
+      const res = await fetchWithRetry(
+        '/api/videos/cut',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cutParsed.data),
+        },
+        { phase: 'api', maxAttempts: 5 }
+      )
 
       if (res.status === 202) {
         const { jobId } = (await res.json()) as { jobId: string }
@@ -1054,7 +1023,10 @@ export default function EditorPageClient({
         while (Date.now() < deadline) {
           setCutProgress(50)
           await new Promise((r) => setTimeout(r, 600))
-          const jr = await fetch(`/api/videos/jobs/${jobId}`)
+          const jr = await fetchWithRetry(`/api/videos/jobs/${jobId}`, undefined, {
+            phase: 'api',
+            maxAttempts: 4,
+          })
           if (!jr.ok) continue
           const j = (await jr.json()) as { status: string; error?: string | null }
           lastStatus = j.status
@@ -1137,19 +1109,28 @@ export default function EditorPageClient({
     const t = currentTime
 
     try {
-      const res = await fetch('/api/videos/speed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sopId,
-          stepId,
-          startMs: t0,
-          endMs: t1,
-          speedFactor: S,
-          ...(currentStep.video_path ? { videoPath: currentStep.video_path } : {}),
-          ...(isVideoCutAsync ? { async: true } : {}),
-        }),
-      })
+      const speedBody = {
+        sopId,
+        stepId,
+        startMs: t0,
+        endMs: t1,
+        speedFactor: S,
+        ...(currentStep.video_path ? { videoPath: currentStep.video_path } : {}),
+        ...(isVideoCutAsync ? { async: true as const } : {}),
+      }
+      const speedParsed = videoSpeedBodySchema.safeParse(speedBody)
+      if (!speedParsed.success) {
+        throw new Error(zodFirstIssueMessage(speedParsed.error))
+      }
+      const res = await fetchWithRetry(
+        '/api/videos/speed',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(speedParsed.data),
+        },
+        { phase: 'api', maxAttempts: 5 }
+      )
 
       if (res.status === 202) {
         const { jobId } = (await res.json()) as { jobId: string }
@@ -1158,7 +1139,10 @@ export default function EditorPageClient({
         while (Date.now() < deadline) {
           setSpeedProgress(50)
           await new Promise((r) => setTimeout(r, 600))
-          const jr = await fetch(`/api/videos/jobs/${jobId}`)
+          const jr = await fetchWithRetry(`/api/videos/jobs/${jobId}`, undefined, {
+            phase: 'api',
+            maxAttempts: 4,
+          })
           if (!jr.ok) continue
           const j = (await jr.json()) as { status: string; error?: string | null }
           lastStatus = j.status
@@ -1225,27 +1209,36 @@ export default function EditorPageClient({
     const url = await fetchSignedMediaUrl(step.video_path)
     if (!url) return
 
-    const fileRes = await fetch(url)
+    const fileRes = await fetchWithRetry(url, undefined, { phase: 'api' })
     if (!fileRes.ok) return
     const videoBlob = await fileRes.blob()
     const thumbnailBlob = await generateThumbnail(videoBlob)
 
-    const signRes = await fetch('/api/videos/sign-upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
-    })
-    if (!signRes.ok) return
-    const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = (await signRes.json()) as {
-      signedUrl: string
-      storagePath: string
+    const thumbSignBody = { sopId, stepId, file: 'thumbnail' as const }
+    const thumbParsed = videoSignUploadBodySchema.safeParse(thumbSignBody)
+    if (!thumbParsed.success) return
+    let thumbnailStoragePath: string
+    try {
+      const out = await signUploadPutBlob({
+        signBody: thumbParsed.data as Record<string, unknown>,
+        blob: thumbnailBlob,
+        putContentType: 'image/jpeg',
+        onRetry: ({ attempt }) => {
+          setStepUploadRetryAttempt((prev) => ({
+            ...prev,
+            [stepId]: Math.max(prev[stepId] ?? 0, attempt),
+          }))
+        },
+      })
+      thumbnailStoragePath = out.storagePath
+      setStepUploadRetryAttempt((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
+    } catch {
+      return
     }
-    const putRes = await fetch(thumbSignedUrl, {
-      method: 'PUT',
-      body: thumbnailBlob,
-      headers: { 'Content-Type': 'image/jpeg' },
-    })
-    if (!putRes.ok) return
 
     setSteps((prev) =>
       prev.map((s) => (s.id === stepId ? { ...s, thumbnail_path: thumbnailStoragePath } : s))
@@ -1271,44 +1264,47 @@ export default function EditorPageClient({
       const thumbnailBlob = await generateThumbnail(blob)
       const videoCt = blob.type?.startsWith('video/') ? blob.type : 'video/mp4'
 
-      const [resVideo, resThumb] = await Promise.all([
-        fetch('/api/videos/sign-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sopId,
-            stepId,
-            file: 'video' as const,
-            videoContentType: videoCt,
-          }),
+      const videoSignBodyTrim = {
+        sopId,
+        stepId,
+        file: 'video' as const,
+        videoContentType: videoCt,
+      }
+      const thumbSignBodyTrim = { sopId, stepId, file: 'thumbnail' as const }
+      const pvTrim = videoSignUploadBodySchema.safeParse(videoSignBodyTrim)
+      const ptTrim = videoSignUploadBodySchema.safeParse(thumbSignBodyTrim)
+      if (!pvTrim.success) throw new Error(zodFirstIssueMessage(pvTrim.error))
+      if (!ptTrim.success) throw new Error(zodFirstIssueMessage(ptTrim.error))
+
+      const bumpRetry = (attempt: number) => {
+        setStepUploadRetryAttempt((prev) => ({
+          ...prev,
+          [stepId]: Math.max(prev[stepId] ?? 0, attempt),
+        }))
+      }
+
+      const [videoOut, thumbOut] = await Promise.all([
+        signUploadPutBlob({
+          signBody: pvTrim.data as Record<string, unknown>,
+          blob,
+          putContentType: videoCt,
+          onRetry: ({ attempt }) => bumpRetry(attempt),
         }),
-        fetch('/api/videos/sign-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
+        signUploadPutBlob({
+          signBody: ptTrim.data as Record<string, unknown>,
+          blob: thumbnailBlob,
+          putContentType: 'image/jpeg',
+          onRetry: ({ attempt }) => bumpRetry(attempt),
         }),
       ])
+      setStepUploadRetryAttempt((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
 
-      if (!resVideo.ok) throw new Error('Failed to get video upload URL')
-      if (!resThumb.ok) throw new Error('Failed to get thumbnail upload URL')
-
-      const { signedUrl: videoSignedUrl, storagePath: videoStoragePath } = await resVideo.json()
-      const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = await resThumb.json()
-
-      const [videoResp, thumbResp] = await Promise.all([
-        fetch(videoSignedUrl, {
-          method: 'PUT',
-          body: blob,
-          headers: { 'Content-Type': videoCt },
-        }),
-        fetch(thumbSignedUrl, {
-          method: 'PUT',
-          body: thumbnailBlob,
-          headers: { 'Content-Type': 'image/jpeg' },
-        }),
-      ])
-      if (!videoResp.ok) throw new Error('Video upload failed')
-      if (!thumbResp.ok) throw new Error('Thumbnail upload failed')
+      const videoStoragePath = videoOut.storagePath
+      const thumbnailStoragePath = thumbOut.storagePath
 
       await markVideoUploaded(stepId)
       setSteps((prev) =>
@@ -1347,7 +1343,16 @@ export default function EditorPageClient({
       }, 5000)
     } catch (err) {
       console.error('Upload trimmed video failed:', err)
+      setStepUploadErrorMessage((prev) => ({
+        ...prev,
+        [stepId]: userFacingUploadError(err, 'video'),
+      }))
       setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'failed' }))
+      setStepUploadRetryAttempt((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
     }
   }
 
@@ -1355,6 +1360,11 @@ export default function EditorPageClient({
     if (currentStepId === stepId) {
       loadLocalVideo()
     }
+    setStepUploadErrorMessage((prev) => {
+      const next = { ...prev }
+      delete next[stepId]
+      return next
+    })
     setStepUploadStatus((prev) => ({
       ...prev,
       [stepId]: DISABLE_VIDEO_COMPRESSION ? 'uploading' : 'compressing',
@@ -1378,6 +1388,7 @@ export default function EditorPageClient({
               inputType: blob.type,
             })
           }
+          const { compressVideoWithMediabunny } = await import('@/lib/video-compress-mediabunny')
           videoBlob = await compressVideoWithMediabunny(blob, {
             onProgress: (p) => {
               setStepUploadProgress((prev) => ({ ...prev, [stepId]: Math.round(p * 100) }))
@@ -1403,44 +1414,47 @@ export default function EditorPageClient({
       const thumbnailBlob = await generateThumbnail(videoBlob)
       const videoCt = videoBlob.type?.startsWith('video/') ? videoBlob.type : 'video/mp4'
 
-      const [resVideo, resThumb] = await Promise.all([
-        fetch('/api/videos/sign-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sopId,
-            stepId,
-            file: 'video' as const,
-            videoContentType: videoCt,
-          }),
+      const videoSignBody2 = {
+        sopId,
+        stepId,
+        file: 'video' as const,
+        videoContentType: videoCt,
+      }
+      const thumbSignBody3 = { sopId, stepId, file: 'thumbnail' as const }
+      const pv2 = videoSignUploadBodySchema.safeParse(videoSignBody2)
+      const pt2 = videoSignUploadBodySchema.safeParse(thumbSignBody3)
+      if (!pv2.success) throw new Error(zodFirstIssueMessage(pv2.error))
+      if (!pt2.success) throw new Error(zodFirstIssueMessage(pt2.error))
+
+      const bumpRetry = (attempt: number) => {
+        setStepUploadRetryAttempt((prev) => ({
+          ...prev,
+          [stepId]: Math.max(prev[stepId] ?? 0, attempt),
+        }))
+      }
+
+      const [videoOut, thumbOut] = await Promise.all([
+        signUploadPutBlob({
+          signBody: pv2.data as Record<string, unknown>,
+          blob: videoBlob,
+          putContentType: videoCt,
+          onRetry: ({ attempt }) => bumpRetry(attempt),
         }),
-        fetch('/api/videos/sign-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sopId, stepId, file: 'thumbnail' as const }),
+        signUploadPutBlob({
+          signBody: pt2.data as Record<string, unknown>,
+          blob: thumbnailBlob,
+          putContentType: 'image/jpeg',
+          onRetry: ({ attempt }) => bumpRetry(attempt),
         }),
       ])
+      setStepUploadRetryAttempt((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
 
-      if (!resVideo.ok) throw new Error('Failed to get video upload URL')
-      if (!resThumb.ok) throw new Error('Failed to get thumbnail upload URL')
-
-      const { signedUrl: videoSignedUrl, storagePath: videoStoragePath } = await resVideo.json()
-      const { signedUrl: thumbSignedUrl, storagePath: thumbnailStoragePath } = await resThumb.json()
-
-      const [videoResp, thumbResp] = await Promise.all([
-        fetch(videoSignedUrl, {
-          method: 'PUT',
-          body: videoBlob,
-          headers: { 'Content-Type': videoCt },
-        }),
-        fetch(thumbSignedUrl, {
-          method: 'PUT',
-          body: thumbnailBlob,
-          headers: { 'Content-Type': 'image/jpeg' },
-        }),
-      ])
-      if (!videoResp.ok) throw new Error('Video upload failed')
-      if (!thumbResp.ok) throw new Error('Thumbnail upload failed')
+      const videoStoragePath = videoOut.storagePath
+      const thumbnailStoragePath = thumbOut.storagePath
 
       await markVideoUploaded(stepId)
       setSteps((prev) =>
@@ -1479,8 +1493,17 @@ export default function EditorPageClient({
       }, 5000)
     } catch (err) {
       console.error('Error in video pipeline:', err)
+      setStepUploadErrorMessage((prev) => ({
+        ...prev,
+        [stepId]: userFacingUploadError(err, 'video'),
+      }))
       setStepUploadStatus((prev) => ({ ...prev, [stepId]: 'failed' }))
       setStepUploadProgress((prev) => ({ ...prev, [stepId]: 0 }))
+      setStepUploadRetryAttempt((prev) => {
+        const next = { ...prev }
+        delete next[stepId]
+        return next
+      })
       // Blob remains in IndexedDB for retry
     }
   }
@@ -1794,10 +1817,18 @@ style: kind === 'arrow'
       if (newAnn.text !== undefined) dbAnnotation.text = newAnn.text
       if (newAnn.style) dbAnnotation.style = newAnn.style
 
+      const annParsed = annotationCreateBodySchema.safeParse(dbAnnotation)
+      if (!annParsed.success) {
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Annotation validation failed:', annParsed.error.flatten(), { stepId, dbAnnotation })
+        }
+        return
+      }
+
       const res = await fetch('/api/annotations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dbAnnotation),
+        body: JSON.stringify(annParsed.data),
       })
       const body = await res.json().catch(() => ({}))
       const data = res.ok ? body : null
@@ -1981,14 +2012,34 @@ style: kind === 'arrow'
           ])
         ),
       }
-      const res = await fetch(`/api/sops/${sopId}/sync`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const data = res.ok ? await res.json() : null
-      if (!res.ok) throw new Error((data as { error?: string })?.error ?? res.statusText)
-      const newStepIds = (data as { newStepIds?: Record<string, string> })?.newStepIds ?? {}
+      const syncParsed = sopSyncPutBodySchema.safeParse(payload)
+      if (!syncParsed.success) {
+        alert(zodFirstIssueMessage(syncParsed.error))
+        setUpdateStatus('idle')
+        return
+      }
+      const res = await fetchWithRetry(
+        `/api/sops/${sopId}/sync`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(syncParsed.data),
+        },
+        { phase: 'sync', maxAttempts: 6 }
+      )
+      let syncJson: { newStepIds?: Record<string, string>; error?: string } | null = null
+      try {
+        syncJson = (await res.json()) as { newStepIds?: Record<string, string>; error?: string }
+      } catch {
+        syncJson = null
+      }
+      if (!res.ok) {
+        const msg = syncJson?.error ?? res.statusText
+        const e = new Error(msg) as Error & { status: number }
+        e.status = res.status
+        throw e
+      }
+      const newStepIds = syncJson?.newStepIds ?? {}
       let nextSteps = steps
       let nextAnnotationsMap = annotations
       if (Object.keys(newStepIds).length > 0) {
@@ -2013,10 +2064,7 @@ style: kind === 'arrow'
       })
     } catch (err) {
       console.error('Sync failed:', err)
-      const msg = err instanceof Error ? err.message : String(err)
-      alert(
-        `Could not save changes: ${msg}\n\nIf this mentions a missing column, run the latest database migrations (sop_steps.kind and sop_steps.text_payload).`
-      )
+      alert(userFacingSyncSaveError(err))
       setUpdateStatus('idle')
     }
   }
@@ -2024,7 +2072,21 @@ style: kind === 'arrow'
   function fireShareViewRevalidate() {
     void fetch(`/api/sops/${encodeURIComponent(sopId)}/revalidate-share-view`, {
       method: 'POST',
-    }).catch(() => {})
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          let detail: unknown
+          try {
+            detail = await res.json()
+          } catch {
+            detail = null
+          }
+          console.warn('revalidate-share-view failed:', res.status, detail)
+        }
+      })
+      .catch((err) => {
+        console.warn('revalidate-share-view request failed:', err)
+      })
   }
 
   async function handlePublishOrUpdate() {
@@ -2986,84 +3048,24 @@ style: kind === 'arrow'
       {/* In routing mode we hide the step editor below */}
       {tab === 'routing' ? null : (
         <>
-          {/* Step chips: wrap to next line when no space */}
-          <div className="py-2">
-        <div className="flex flex-wrap gap-2 items-center">
-          <DndContext
-            sensors={dndSensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleReorderDragEnd}
-          >
-            <SortableContext
-              items={(reorderOrderIds ?? steps.map((s) => s.id)) as string[]}
-              strategy={horizontalListSortingStrategy}
-            >
-              {orderedStepsForChips().map((step, i) => (
-                <SortableStepChip
-                  key={step.id}
-                  id={step.id}
-                  label={`Step ${step.idx + 1}`}
-                  active={currentStepId === step.id}
-                  reorderMode={reorderMode}
-                  disabled={!canEdit || steps.length <= 1}
-                  onClick={() => {
-                    setCurrentStepId(step.id)
-                  }}
-                />
-              ))}
-            </SortableContext>
-          </DndContext>
-          {canEdit && (
-            <>
-              <button
-                type="button"
-                onClick={handleAddStep}
-                className="px-3 py-1.5 rounded-lg bg-gray-200 dark:bg-gray-700 touch-target whitespace-nowrap text-sm"
-                disabled={reorderMode}
-                aria-disabled={reorderMode}
-                aria-label="Add step"
-              >
-                <span className="md:hidden">Add</span>
-                <span className="hidden md:inline">+ Add Step</span>
-              </button>
-              {steps.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!reorderMode) {
-                      setReorderOrderIds(steps.map((s) => s.id))
-                      setReorderMode(true)
-                    } else {
-                      void finishReorderMode(true)
-                    }
-                  }}
-                  className={`px-3 py-1.5 rounded-lg touch-target whitespace-nowrap text-sm ${
-                    reorderMode
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 dark:bg-gray-700'
-                  }`}
-                  aria-label={reorderMode ? 'Done moving steps' : 'Move steps'}
-                >
-                  {reorderMode ? 'Done' : 'Move'}
-                </button>
-              )}
-              {steps.length > 1 && currentStepId && (
-                <button
-                  type="button"
-                  onClick={() => handleDeleteStep(currentStepId)}
-                  className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white touch-target"
-                  aria-label="Delete current step"
-                  disabled={reorderMode}
-                  aria-disabled={reorderMode}
-                >
-                  🗑️
-                </button>
-              )}
-
-            </>
-          )}
-        </div>
-      </div>
+          <EditorStepChipsBar
+            steps={steps}
+            reorderMode={reorderMode}
+            reorderOrderIds={reorderOrderIds}
+            canEdit={canEdit}
+            currentStepId={currentStepId}
+            onSelectStep={setCurrentStepId}
+            onReorderOrderIdsChange={setReorderOrderIds}
+            onStartReorderMode={() => {
+              setReorderOrderIds(steps.map((s) => s.id))
+              setReorderMode(true)
+            }}
+            onDoneReorderMoves={() => void finishReorderMode(true)}
+            onAddStep={handleAddStep}
+            onDeleteCurrentStep={() => {
+              if (currentStepId) void handleDeleteStep(currentStepId)
+            }}
+          />
 
       {!canEdit && (
         <div className="py-2.5 border-b border-gray-100 dark:border-gray-800/80">
@@ -3545,17 +3547,26 @@ style: kind === 'arrow'
                 const progress = stepUploadProgress[currentStepId] ?? 0
                 const result = stepUploadResult[currentStepId]
                 if (status === 'compressing' || status === 'uploading') {
+                  const retryN = stepUploadRetryAttempt[currentStepId] ?? 0
                   return (
-                    <div className="flex items-center gap-2 py-1.5 px-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-blue-800 dark:text-blue-200">
-                      <span>{status === 'compressing' ? 'Compressing…' : 'Uploading…'}</span>
-                      {progress > 0 && <span>{progress}%</span>}
+                    <div className="flex flex-col gap-0.5 py-1.5 px-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm text-blue-800 dark:text-blue-200">
+                      <div className="flex items-center gap-2">
+                        <span>{status === 'compressing' ? 'Compressing…' : 'Uploading…'}</span>
+                        {progress > 0 && <span>{progress}%</span>}
+                      </div>
+                      {retryN > 0 && status === 'uploading' && (
+                        <span className="text-xs text-blue-700/90 dark:text-blue-300/90">
+                          Unstable connection — automatic retry {retryN}
+                        </span>
+                      )}
                     </div>
                   )
                 }
                 if (status === 'failed') {
+                  const failMsg = stepUploadErrorMessage[currentStepId]
                   return (
-                    <div className="flex items-center gap-2 py-1.5 px-2 bg-red-50 dark:bg-red-900/20 rounded-lg text-sm text-red-800 dark:text-red-200">
-                      <span>Upload failed.</span>
+                    <div className="flex flex-col gap-1 py-1.5 px-2 bg-red-50 dark:bg-red-900/20 rounded-lg text-sm text-red-800 dark:text-red-200">
+                      <span>{failMsg ?? 'Upload failed — network or server error.'}</span>
                       <button
                         type="button"
                         onClick={async () => {
@@ -3566,9 +3577,9 @@ style: kind === 'arrow'
                             await processAndUploadVideo(blob, currentStepId, step.duration_ms ?? 0)
                           }
                         }}
-                        className="font-medium underline touch-target"
+                        className="font-medium underline touch-target self-start"
                       >
-                        Retry
+                        Retry upload
                       </button>
                     </div>
                   )

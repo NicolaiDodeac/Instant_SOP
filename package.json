@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "analyze": "ANALYZE=true next build",
     "start": "next start",
     "lint": "next lint"
   },
@@ -30,6 +31,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@next/bundle-analyzer": "^15.5.9",
     "@types/node": "^22.10.5",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^18.3.27",

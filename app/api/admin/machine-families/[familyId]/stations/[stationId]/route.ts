@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
 import { requireSuperUser } from '@/lib/require-super-user-server'
 import type { MachineFamilyStation } from '@/lib/types'
+import { adminPatchStationBodySchema } from '@/lib/validation/admin'
 
 type RouteContext = { params: Promise<{ familyId: string; stationId: string }> }
 
@@ -14,19 +16,20 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
   const { familyId, stationId } = await context.params
   if (!familyId || !stationId) {
-    return NextResponse.json({ error: 'Missing family or station id' }, { status: 400 })
+    return apiErrorResponse('Missing family or station id', 400, { retryable: false })
   }
 
-  let body: {
-    station_code?: number
-    name?: string
-    section?: string
-    sort_order?: number | null
-  }
+  let body: unknown
   try {
     body = await request.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    return apiErrorResponse('Invalid JSON', 400, { retryable: false })
+  }
+
+  const parsed = adminPatchStationBodySchema.safeParse(body)
+  if (!parsed.success) {
+    const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+    return apiErrorResponse(msg, 400, { retryable: false })
   }
 
   const service = createServiceRoleClient()
@@ -37,37 +40,23 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     .maybeSingle()
 
   if (exErr || !existing || existing.machine_family_id !== familyId) {
-    return NextResponse.json({ error: 'Station not found' }, { status: 404 })
+    return apiErrorResponse('Station not found', 404, { retryable: false })
   }
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
 
-  if (typeof body.station_code === 'number' && Number.isInteger(body.station_code)) {
-    updates.station_code = body.station_code
-  }
-  if (typeof body.name === 'string') {
-    const n = body.name.trim()
-    if (!n) {
-      return NextResponse.json({ error: 'Name cannot be empty' }, { status: 400 })
-    }
-    updates.name = n
-  }
-  if (typeof body.section === 'string') {
-    const s = body.section.trim()
-    if (!s) {
-      return NextResponse.json({ error: 'Section cannot be empty' }, { status: 400 })
-    }
-    updates.section = s
-  }
-  if (body.sort_order === null) {
+  if (parsed.data.station_code !== undefined) updates.station_code = parsed.data.station_code
+  if (parsed.data.name !== undefined) updates.name = parsed.data.name
+  if (parsed.data.section !== undefined) updates.section = parsed.data.section
+  if (parsed.data.sort_order === null) {
     updates.sort_order = null
-  } else if (typeof body.sort_order === 'number' && Number.isFinite(body.sort_order)) {
-    updates.sort_order = Math.trunc(body.sort_order)
+  } else if (parsed.data.sort_order !== undefined) {
+    updates.sort_order = parsed.data.sort_order
   }
 
   const payloadKeys = Object.keys(updates).filter((k) => k !== 'updated_at')
   if (payloadKeys.length === 0) {
-    return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
+    return apiErrorResponse('No valid fields to update', 400, { retryable: false })
   }
 
   const { data, error } = await service
@@ -80,15 +69,16 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
   if (error) {
     if (error.code === '23505') {
-      return NextResponse.json(
-        { error: 'Another station already uses this station code.' },
-        { status: 409 }
+      return apiErrorResponse(
+        'Another station already uses this station code.',
+        409,
+        { retryable: false }
       )
     }
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return apiErrorResponse(error.message, 500)
   }
   if (!data) {
-    return NextResponse.json({ error: 'Station not found' }, { status: 404 })
+    return apiErrorResponse('Station not found', 404, { retryable: false })
   }
 
   return NextResponse.json({ station: data as MachineFamilyStation })
@@ -103,7 +93,7 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
 
   const { familyId, stationId } = await context.params
   if (!familyId || !stationId) {
-    return NextResponse.json({ error: 'Missing family or station id' }, { status: 400 })
+    return apiErrorResponse('Missing family or station id', 400, { retryable: false })
   }
 
   const service = createServiceRoleClient()
@@ -114,7 +104,7 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     .maybeSingle()
 
   if (rErr || !row || row.machine_family_id !== familyId) {
-    return NextResponse.json({ error: 'Station not found' }, { status: 404 })
+    return apiErrorResponse('Station not found', 404, { retryable: false })
   }
 
   const { error } = await service
@@ -124,7 +114,7 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     .eq('machine_family_id', familyId)
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return apiErrorResponse(error.message, 500)
   }
 
   return NextResponse.json({ deleted: stationId })

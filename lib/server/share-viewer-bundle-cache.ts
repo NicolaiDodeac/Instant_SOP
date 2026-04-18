@@ -1,10 +1,18 @@
-import { unstable_cache } from 'next/cache'
+import { revalidatePath, revalidateTag, unstable_cache } from 'next/cache'
 import { createServiceRoleClient } from '@/lib/supabase/server'
 import type { SOP, SOPStep, StepAnnotation } from '@/lib/types'
 
 /** Use with `revalidateTag` after a published SOP’s share page data may have changed. */
 export function shareViewerRevalidateTagForShareSlug(slug: string): string {
   return `share-viewer:${slug.trim()}`
+}
+
+/** Bust tagged Data Cache and `/sop/[share]` so RSC/metadata do not stay stale after writes. */
+export function revalidatePublishedShareViewerCache(slug: string): void {
+  const trimmed = slug.trim()
+  if (!trimmed) return
+  revalidateTag(shareViewerRevalidateTagForShareSlug(trimmed))
+  revalidatePath(`/sop/${trimmed}`)
 }
 
 export type PublishedSopViewerBundle = {

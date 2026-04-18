@@ -1,8 +1,9 @@
-import { revalidateTag } from 'next/cache'
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { resolveIsSuperUser } from '@/lib/auth/resolve-is-super-user'
-import { shareViewerRevalidateTagForShareSlug } from '@/lib/server/share-viewer-bundle-cache'
+import { revalidatePublishedShareViewerCache } from '@/lib/server/share-viewer-bundle-cache'
 import { createClientServer, createServiceRoleClient } from '@/lib/supabase/server'
+import { sopSyncPutBodySchema } from '@/lib/validation/sop-sync'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 function isUuid(id: string): boolean {
@@ -20,38 +21,34 @@ export async function PUT(
     const { data: { user }, error: authError } = await supabase.auth.getUser()
 
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return apiErrorResponse('Unauthorized', 401, { retryable: false })
     }
 
-    const body = await request.json()
-    const { title, description, steps = [], annotations: annotationsByStep = {} } = body as {
-      title?: string
-      description?: string
-      steps?: Array<{
-        id: string
-        idx: number
-        title: string
-        kind?: 'media' | 'text'
-        instructions?: string
-        video_path?: string | null
-        thumbnail_path?: string | null
-        image_path?: string | null
-        text_payload?: object | null
-        duration_ms?: number | null
-      }>
-      annotations?: Record<string, Array<{ t_start_ms: number; t_end_ms: number; kind: 'arrow' | 'label'; x: number; y: number; angle?: number; text?: string; style?: object }>>
+    let body: unknown
+    try {
+      body = await request.json()
+    } catch {
+      return apiErrorResponse('Invalid JSON', 400, { retryable: false })
     }
+
+    const parsed = sopSyncPutBodySchema.safeParse(body)
+    if (!parsed.success) {
+      const msg = parsed.error.issues[0]?.message ?? 'Invalid request body'
+      return apiErrorResponse(msg, 400, { retryable: false })
+    }
+
+    const { title, description, steps, annotations: annotationsByStep } = parsed.data
 
     const service = createServiceRoleClient()
 
     const { data: sop } = await service.from('sops').select('owner').eq('id', sopId).single()
     if (!sop) {
-      return NextResponse.json({ error: 'SOP not found' }, { status: 404 })
+      return apiErrorResponse('SOP not found', 404, { retryable: false })
     }
     const isOwner = sop.owner === user.id
     const isSuperUser = await resolveIsSuperUser(service, user.id)
     if (!isOwner && !isSuperUser) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      return apiErrorResponse('Forbidden', 403, { retryable: false })
     }
 
     const sopPatch: Record<string, unknown> = { last_edited_by: user.id }
@@ -122,15 +119,12 @@ export async function PUT(
     const slug =
       (shareRow as { share_slug: string | null } | null)?.share_slug?.trim() ?? ''
     if (slug) {
-      revalidateTag(shareViewerRevalidateTagForShareSlug(slug))
+      revalidatePublishedShareViewerCache(slug)
     }
 
     return NextResponse.json({ ok: true, newStepIds })
   } catch (err) {
     console.error('PUT /api/sops/[sopId]/sync error:', err)
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Server error' },
-      { status: 500 }
-    )
+    return apiErrorResponse(err instanceof Error ? err.message : 'Server error', 500)
   }
 }

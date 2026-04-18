@@ -2,6 +2,11 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import {
+  adminAddEditorBodySchema,
+  adminEditorUserIdParamSchema,
+} from '@/lib/validation/admin'
+import { zodFirstIssueMessage } from '@/lib/validation/zod-helpers'
 
 type Editor = { user_id: string; email: string | null }
 
@@ -64,10 +69,15 @@ export default function AdminEditorsPage() {
     setAdding(true)
     setAddError(null)
     try {
+      const parsed = adminAddEditorBodySchema.safeParse({ email })
+      if (!parsed.success) {
+        setAddError(zodFirstIssueMessage(parsed.error))
+        return
+      }
       const res = await fetch('/api/admin/editors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify(parsed.data),
       })
       const data = await res.json()
 
@@ -89,9 +99,15 @@ export default function AdminEditorsPage() {
     setRemovingId(userId)
     setRemoveError(null)
     try {
-      const res = await fetch(`/api/admin/editors?user_id=${encodeURIComponent(userId)}`, {
-        method: 'DELETE',
-      })
+      const idParsed = adminEditorUserIdParamSchema.safeParse(userId)
+      if (!idParsed.success) {
+        setRemoveError('Invalid user id')
+        return
+      }
+      const res = await fetch(
+        `/api/admin/editors?user_id=${encodeURIComponent(idParsed.data)}`,
+        { method: 'DELETE' }
+      )
       let data: { error?: string } = {}
       try {
         data = await res.json()

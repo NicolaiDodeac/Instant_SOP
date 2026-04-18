@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation'
 import { PasswordVisibilityButton } from '@/components/auth/PasswordVisibilityButton'
 import { SIGNUP_EMAIL_EXISTS_CODE } from '@/lib/auth/signup-errors'
 import { useSupabaseClient } from '@/lib/supabase/client'
+import { authSignInBodySchema, authSignUpBodySchema } from '@/lib/validation/auth'
 
 type AuthMode = 'signin' | 'signup'
 
@@ -63,10 +64,25 @@ function LoginContent() {
     setShowDuplicateEmailHint(false)
 
     try {
+      const parsed = authSignInBodySchema.safeParse({ email, password })
+      if (!parsed.success) {
+        const flat = parsed.error.flatten()
+        setError(
+          flat.fieldErrors.email?.[0] ??
+            flat.fieldErrors.password?.[0] ??
+            'Invalid request'
+        )
+        setLoading(false)
+        return
+      }
+
       const res = await fetch('/api/auth/signin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({
+          email: parsed.data.email,
+          password: parsed.data.password,
+        }),
       })
 
       const data = await res.json()
@@ -83,10 +99,18 @@ function LoginContent() {
       if (process.env.NODE_ENV === 'development') {
         console.error('Sign in error:', err)
       }
-      const errorMessage = err instanceof Error
-        ? err.message
-        : 'Network error. Please check your connection and try again.'
-      setError(errorMessage)
+      const errorMessage = err instanceof Error ? err.message : ''
+      if (
+        errorMessage.includes('fetch') ||
+        errorMessage.includes('Failed to fetch') ||
+        !errorMessage
+      ) {
+        setError(
+          'Connection failed. Check Wi‑Fi, try again, or disable browser extensions that block requests.'
+        )
+      } else {
+        setError(errorMessage || 'Network error. Please check your connection and try again.')
+      }
       setLoading(false)
     }
   }
@@ -130,10 +154,25 @@ function LoginContent() {
     setShowDuplicateEmailHint(false)
 
     try {
+      const parsed = authSignUpBodySchema.safeParse({ email, password })
+      if (!parsed.success) {
+        const flat = parsed.error.flatten()
+        setError(
+          flat.fieldErrors.email?.[0] ??
+            flat.fieldErrors.password?.[0] ??
+            'Invalid request'
+        )
+        setLoading(false)
+        return
+      }
+
       const res = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({
+          email: parsed.data.email,
+          password: parsed.data.password,
+        }),
       })
 
       let data: { error?: string; message?: string; code?: string } = {}

@@ -1,22 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { z } from 'zod'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { SIGNUP_EMAIL_EXISTS_CODE } from '@/lib/auth/signup-errors'
 import { createClientServer } from '@/lib/supabase/server'
+import { authSignUpBodySchema } from '@/lib/validation/auth'
 
 const ALLOWED_DOMAIN = 'magna.co.uk'
-
-const signupBodySchema = z.object({
-  email: z
-    .string()
-    .trim()
-    .min(1, 'Email is required')
-    .email('Enter a valid email')
-    .transform((s) => s.toLowerCase()),
-  password: z
-    .string()
-    .min(6, 'Password must be at least 6 characters')
-    .max(128, 'Password must be 128 characters or fewer'),
-})
 
 /**
  * Server-side sign-up to avoid client "Failed to fetch" errors.
@@ -28,26 +16,25 @@ export async function POST(request: NextRequest) {
     try {
       body = await request.json()
     } catch {
-      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+      return apiErrorResponse('Invalid request body', 400, { retryable: false })
     }
 
-    const parsed = signupBodySchema.safeParse(body)
+    const parsed = authSignUpBodySchema.safeParse(body)
     if (!parsed.success) {
       const flat = parsed.error.flatten()
       const message =
         flat.fieldErrors.email?.[0] ??
         flat.fieldErrors.password?.[0] ??
         'Invalid request'
-      return NextResponse.json({ error: message }, { status: 400 })
+      return apiErrorResponse(message, 400, { retryable: false })
     }
 
     const { email: emailLower, password } = parsed.data
 
     if (!emailLower.endsWith(`@${ALLOWED_DOMAIN}`)) {
-      return NextResponse.json(
-        { error: `Only @${ALLOWED_DOMAIN} accounts can sign up.` },
-        { status: 403 }
-      )
+      return apiErrorResponse(`Only @${ALLOWED_DOMAIN} accounts can sign up.`, 403, {
+        retryable: false,
+      })
     }
 
     const supabase = await createClientServer()
@@ -67,26 +54,20 @@ export async function POST(request: NextRequest) {
         lower.includes('user already exists') ||
         lower.includes('email address is already')
       ) {
-        return NextResponse.json(
-          {
-            error: 'An account with this email already exists.',
-            code: SIGNUP_EMAIL_EXISTS_CODE,
-          },
-          { status: 409 }
-        )
+        return apiErrorResponse('An account with this email already exists.', 409, {
+          code: SIGNUP_EMAIL_EXISTS_CODE,
+          retryable: false,
+        })
       }
-      return NextResponse.json({ error: error.message }, { status: 400 })
+      return apiErrorResponse(error.message, 400, { retryable: false })
     }
 
     // With email confirmation enabled, GoTrue returns a user with no identities for duplicate emails.
     if (data.user && (!data.user.identities || data.user.identities.length === 0)) {
-      return NextResponse.json(
-        {
-          error: 'An account with this email already exists.',
-          code: SIGNUP_EMAIL_EXISTS_CODE,
-        },
-        { status: 409 }
-      )
+      return apiErrorResponse('An account with this email already exists.', 409, {
+        code: SIGNUP_EMAIL_EXISTS_CODE,
+        retryable: false,
+      })
     }
 
     return NextResponse.json({
@@ -96,10 +77,7 @@ export async function POST(request: NextRequest) {
     })
   } catch (err) {
     console.error('Sign-up error:', err)
-    return NextResponse.json(
-      { error: 'An unexpected error occurred. Please try again.' },
-      { status: 500 }
-    )
+    return apiErrorResponse('An unexpected error occurred. Please try again.', 500)
   }
 }
 

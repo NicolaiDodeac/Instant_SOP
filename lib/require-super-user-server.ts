@@ -9,10 +9,14 @@ export async function requireSuperUser(supabase: ServerSupabase) {
     error: authError,
   } = await supabase.auth.getUser()
   if (authError || !user) {
-    return { ok: false, status: 401 as const, json: { error: 'Unauthorized' } }
+    return {
+      ok: false,
+      status: 401 as const,
+      json: { error: 'Unauthorized', retryable: false },
+    }
   }
   if (await resolveIsSuperUser(supabase, user.id)) {
     return { ok: true, user } as const
   }
-  return { ok: false, status: 403 as const, json: { error: 'Forbidden' } }
+  return { ok: false, status: 403 as const, json: { error: 'Forbidden', retryable: false } }
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { apiErrorResponse } from '@/lib/api-error-response'
 import { createClientServer } from '@/lib/supabase/server'
 
 export const runtime = 'nodejs'
@@ -11,7 +12,7 @@ export async function GET(
   try {
     const { id } = await params
     if (!id) {
-      return NextResponse.json({ error: 'Missing job id' }, { status: 400 })
+      return apiErrorResponse('Missing job id', 400, { retryable: false })
     }
 
     const supabase = await createClientServer()
@@ -21,7 +22,7 @@ export async function GET(
     } = await supabase.auth.getUser()
 
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return apiErrorResponse('Unauthorized', 401, { retryable: false })
     }
 
     const { data: job, error } = await supabase
@@ -32,15 +33,15 @@ export async function GET(
       .maybeSingle()
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return apiErrorResponse(error.message, 500)
     }
     if (!job) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      return apiErrorResponse('Not found', 404, { retryable: false })
     }
 
     return NextResponse.json(job)
   } catch (e) {
     console.error('GET /api/videos/jobs/[id]:', e)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return apiErrorResponse('Internal server error', 500)
   }
 }
